@@ -26,10 +26,9 @@ from stock_analysis.db.models import (
     PeriodTurnLine,
     StockTakeSession,
 )
-from stock_analysis.db.session import has_enrichment, has_initial_baseline, set_app_state
+from stock_analysis.db.session import has_enrichment, has_initial_baseline
 from stock_analysis.importers.stockholding_parser import parse_stockholding_file
 from tests.helpers.import_snapshot import (
-    FIXTURES_DIR,
     build_stockholding_row,
     write_fixture_csvs,
 )

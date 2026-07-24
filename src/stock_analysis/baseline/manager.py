@@ -221,24 +221,6 @@ class TurnImportSummary:
     import_type: str
 
 
-def _get_or_create_item(session: Session, row: TurnRow) -> tuple[Item, bool]:
-    item = session.scalar(select(Item).where(Item.sku == row.code))
-    created = False
-    if item is None:
-        item = Item(sku=row.code, name=row.description)
-        session.add(item)
-        session.flush()
-        created = True
-    item.name = row.description or item.name
-    item.department = row.dept or item.department
-    item.supplier = row.supplier or item.supplier
-    if row.last_unit_cost > 0:
-        item.unit_cost = row.last_unit_cost
-    item.is_deprecated = row.is_deprecated
-    item.not_in_turn_report = False
-    return item, created
-
-
 def _store_turn_line(session: Session, batch_id: int, item_id: int, row: TurnRow) -> None:
     session.add(
         PeriodTurnLine(
@@ -310,13 +292,11 @@ def apply_turn_import(
         if should_skip_item(row.code, row.description):
             continue
         item = sku_map.get(row.code)
-        created = False
         if item is None:
             item = Item(sku=row.code, name=row.description)
             session.add(item)
             session.flush()
             sku_map[row.code] = item
-            created = True
             new_items += 1
         else:
             item.name = row.description or item.name

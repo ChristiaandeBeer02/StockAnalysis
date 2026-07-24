@@ -16,11 +16,10 @@ hiddenimports = [
     "pandas",
     "openpyxl",
     "reportlab",
-    "plotly",
     "stock_analysis",
 ]
 
-for package in ("plotly", "reportlab"):
+for package in ("reportlab",):
     pkg_datas, pkg_binaries, pkg_hidden = collect_all(package)
     datas += pkg_datas
     binaries += pkg_binaries

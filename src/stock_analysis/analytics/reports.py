@@ -2,20 +2,11 @@
 
 from __future__ import annotations
 
-from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from stock_analysis.analytics.dashboard import build_period_summary, get_period_lines
-from stock_analysis.db.models import BaselineItem, ImportBatch, Item
-
-
-def _baseline_qty_map(session: Session, item_ids: list[int]) -> dict[int, float]:
-    if not item_ids:
-        return {}
-    rows = session.scalars(
-        select(BaselineItem).where(BaselineItem.item_id.in_(item_ids))
-    ).all()
-    return {row.item_id: row.qty_on_hand for row in rows}
+from stock_analysis.analytics.queries import baseline_qty_map
+from stock_analysis.db.models import ImportBatch
 
 
 def slow_moving_report(session: Session, batch_id: int | None = None) -> list[dict]:
@@ -23,7 +14,7 @@ def slow_moving_report(session: Session, batch_id: int | None = None) -> list[di
     if not lines:
         return []
 
-    baseline_map = _baseline_qty_map(session, [item.id for _, item in lines])
+    baseline_map = baseline_qty_map(session, [item.id for _, item in lines])
     report: list[dict] = []
     for line, item in lines:
         qty = baseline_map.get(item.id, line.on_hand)
@@ -51,7 +42,7 @@ def abc_report(session: Session, batch_id: int | None = None) -> list[dict]:
     if not lines:
         return []
 
-    baseline_map = _baseline_qty_map(session, [item.id for _, item in lines])
+    baseline_map = baseline_qty_map(session, [item.id for _, item in lines])
     rows: list[dict] = []
     for line, item in lines:
         cost = line.last_unit_cost or item.unit_cost or 0

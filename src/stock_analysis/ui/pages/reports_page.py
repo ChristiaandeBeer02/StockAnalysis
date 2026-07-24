@@ -18,7 +18,8 @@ from stock_analysis.analytics.pivot import ROW_FIELDS, VALUE_FIELDS, build_pivot
 from stock_analysis.analytics.reports import abc_report, abc_summary, report_period_label, slow_moving_report
 from stock_analysis.db.session import get_session, has_enrichment, has_initial_baseline
 from stock_analysis.ui.export_dialog import prompt_export_excel, prompt_export_pdf
-from stock_analysis.ui.widgets.chart_panel import ChartPanel
+from stock_analysis.ui.widgets.chart_builders import build_abc_chart, build_pie_chart
+from stock_analysis.ui.widgets.chart_tile import ChartTile
 from stock_analysis.ui.widgets.data_table import DataTable
 from stock_analysis.ui.widgets.empty_state import EmptyState
 
@@ -68,7 +69,7 @@ class ReportsPage(QWidget):
         self._abc_table.set_headers(
             ["SKU", "Name", "Dept", "Qty 90d", "Sales Value", "ABC", "Cumulative %"]
         )
-        self._abc_chart = ChartPanel()
+        self._abc_chart = ChartTile("ABC Classification")
         self._pivot_table = DataTable()
 
         slow_tab = QWidget()
@@ -207,7 +208,10 @@ class ReportsPage(QWidget):
         ]
         self._abc_table.set_rows(self._abc_rows)
         self._configure_abc_table_columns()
-        self._abc_chart.render_abc_chart(summary)
+        if summary:
+            self._abc_chart.set_chart_view(build_abc_chart(summary))
+        else:
+            self._abc_chart.set_chart_view(build_pie_chart({}, "No ABC data available."))
 
     def _load_pivot(self) -> None:
         with get_session() as session:

@@ -7,6 +7,7 @@ import json
 from sqlalchemy import desc, select
 from sqlalchemy.orm import Session
 
+from stock_analysis.analytics.queries import baseline_qty_map
 from stock_analysis.db.models import AnalysisResult, BaselineItem, ImportBatch, Item, PeriodTurnLine
 from stock_analysis.importers.item_filters import should_skip_item
 
@@ -68,15 +69,6 @@ def get_latest_period_lines(session: Session) -> list[tuple[PeriodTurnLine, Item
     return get_period_lines(session, None)
 
 
-def _baseline_qty_map(session: Session, item_ids: list[int]) -> dict[int, float]:
-    if not item_ids:
-        return {}
-    rows = session.scalars(
-        select(BaselineItem).where(BaselineItem.item_id.in_(item_ids))
-    ).all()
-    return {row.item_id: row.qty_on_hand for row in rows}
-
-
 def build_period_summary(session: Session, batch_id: int | None = None) -> dict:
     if batch_id is None:
         batch = _latest_turn_batch(session)
@@ -88,7 +80,7 @@ def build_period_summary(session: Session, batch_id: int | None = None) -> dict:
         return {}
 
     item_ids = [item.id for _, item in lines]
-    baseline_map = _baseline_qty_map(session, item_ids)
+    baseline_map = baseline_qty_map(session, item_ids)
 
     total_sales_90 = sum(line.qty_sold_90 for line, _ in lines)
     overstock_items = sum(1 for line, _ in lines if line.over_stock_qty_3mo > 0)
@@ -284,7 +276,7 @@ def build_stock_health_breakdown(session: Session, batch_id: int | None = None) 
     if not lines:
         return {}
     item_ids = [item.id for _, item in lines]
-    baseline_map = _baseline_qty_map(session, item_ids)
+    baseline_map = baseline_qty_map(session, item_ids)
     return build_stock_health_breakdown_from_lines(lines, baseline_map)
 
 

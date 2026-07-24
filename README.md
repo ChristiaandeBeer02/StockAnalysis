@@ -5,10 +5,8 @@ Single-user Windows desktop inventory analytics for IQ Retail CSV exports.
 ## Setup
 
 ```bash
-pip install -e ".[dev,webengine]"
+pip install -e ".[dev]"
 ```
-
-Charts require the `webengine` optional dependency (PySide6 WebEngine).
 
 ## Run
 
@@ -60,7 +58,7 @@ Items that appear only in sthold2 are kept in inventory but marked **No turn dat
 
 - Step 2 enrichment: `IQStockTurn.csv` + `IQStockTurnunder.csv`
 - Ongoing period imports from Home
-- Dashboard charts (Plotly), understock alerts
+- Dashboard charts (Qt Charts), understock alerts
 - Inventory: dept, sold 90d, item detail with period history
 
 ## Phase 3
@@ -81,7 +79,7 @@ Items that appear only in sthold2 are kept in inventory but marked **No turn dat
 ## Build Windows executable
 
 ```bash
-pip install -e ".[dev,webengine]"
+pip install -e ".[dev]"
 build.bat
 ```
 

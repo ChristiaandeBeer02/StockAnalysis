@@ -1,7 +1,5 @@
 """Tests for stock take compare and reconcile."""
 
-from pathlib import Path
-
 import pytest
 from sqlalchemy import select
 
