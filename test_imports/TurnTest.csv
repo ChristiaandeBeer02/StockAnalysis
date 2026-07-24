@@ -1,0 +1,23 @@
+Manta DIY (Pty) Ltd,,,,,,,,,,Date Printed: 01/01/2026,,,,,,,,,,1 of 1
+
+Stock Turn Report - Over Stocking,,,,,,,
+
+Report Parameters,,,,,,,,,,,,
+
+Period: 01/01/2026 to 31/01/2026,
+
+Optimum Stock Holding In Months:,,,,,,,,,,2.00,,,,,
+,,,,,
+Sort Order:,,,,,,,,Department,,,,
+
+Qty Sold (Days),,,,,,,,Ave Monthly Sales,,,,,,,Stock Days on Hand,,,,,,Over Stock Quantity ,,,,,,,Over Stock Value ,,,,,,,,,
+,,,,,,,,,,,,,,,,,,,,,Last UnitCost,,,,,,,,,,,,,,,,,,
+,,
+Dept,,Supplier,Code,Description,On Hand,,,,,Last 30,,,,,Last 90,Last 180,,3 Months,6 Months,,,,,,3 Months,,6 Months,,,,,3 Months,6 Months,3 Months,,,,6 Months,,,
+
+,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,
+A1,,S001,BASE001,Widget Alpha Test Item*1/1/26,10.00,,,,,0.00,,,,0.00,0.00,,0.00,0.00,,,,,,,,,,5.50,,,5.00,4.00,27.50,,,,22.00
+A1,,S001,BASE002,Widget Beta Test Item*1/1/26,5.00,,,,,0.00,,,,12.00,0.00,,4.00,0.00,,,,,,,,,,5.00,,,0.00,0.00,0.00,,,,0.00
+A1,,S002,BASE004,Widget Delta Fast Seller*1/1/26,20.00,,,,,35.00,,,,100.00,150.00,,33.33,25.00,,,,,,,,,,5.00,,,0.00,0.00,0.00,,,,0.00
+B1,,S003,BASE005,Widget Epsilon Slow Mover*1/1/26,15.00,,,,,0.00,,,,0.00,0.00,,0.00,0.00,,,,,,,,,,5.00,,,15.00,15.00,75.00,,,,75.00
+B1,,S004,TURN001,Turn Only New Item*1/1/26,3.00,,,,,0.00,,,,6.00,0.00,,0.00,0.00,,,,,,,,,,12.00,,,0.00,0.00,0.00,,,,0.00

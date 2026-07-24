@@ -1,0 +1,339 @@
+{
+  "app_state": {
+    "enrichment_complete": "true",
+    "initial_baseline_complete": "true"
+  },
+  "enrichment": {
+    "deprecated_count": 0,
+    "import_type": "baseline_enrichment",
+    "items_processed": 6,
+    "new_items": 2,
+    "period_end": "31/01/2026",
+    "period_start": "01/01/2026",
+    "qty_changes": 2
+  },
+  "initial_baseline": {
+    "deprecated_count": 1,
+    "items_imported": 6,
+    "period_end": "31/01/2026",
+    "period_start": "01/01/2026",
+    "total_stock_value": 300.0
+  },
+  "inventory": [
+    [
+      "BASE001",
+      "Widget Alpha Test Item*1/1/26",
+      "A1",
+      "10",
+      "5.50",
+      "0",
+      "Active"
+    ],
+    [
+      "BASE002",
+      "Widget Beta Test Item*1/1/26",
+      "A1",
+      "5",
+      "5.00",
+      "12",
+      "Active"
+    ],
+    [
+      "BASE003",
+      "Widget Gamma Baseline Only*1/1/26",
+      "\u2014",
+      "8",
+      "5.00",
+      "\u2014",
+      "No turn data"
+    ],
+    [
+      "BASE004",
+      "Widget Delta Fast Seller*1/1/26",
+      "A1",
+      "20",
+      "5.00",
+      "100",
+      "Active"
+    ],
+    [
+      "BASE005",
+      "Widget Epsilon Slow Mover*1/1/26",
+      "B1",
+      "15",
+      "5.00",
+      "0",
+      "Active"
+    ],
+    [
+      "DEP001",
+      "zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz",
+      "\u2014",
+      "2",
+      "5.00",
+      "\u2014",
+      "Deprecated"
+    ],
+    [
+      "TURN001",
+      "Turn Only New Item*1/1/26",
+      "B1",
+      "3",
+      "\u2014",
+      "6",
+      "Active"
+    ],
+    [
+      "UNDER001",
+      "Under Report Only Item*1/1/26",
+      "C1",
+      "0",
+      "\u2014",
+      "8",
+      "Active"
+    ]
+  ],
+  "items": [
+    {
+      "department": "A1",
+      "is_deprecated": false,
+      "name": "Widget Alpha Test Item*1/1/26",
+      "not_in_turn_report": false,
+      "over_stock_qty_3mo": 5.0,
+      "qty_on_hand": 10.0,
+      "qty_sold_90": 0.0,
+      "sku": "BASE001",
+      "supplier": "S001",
+      "under_stock_qty_3mo": 0.0,
+      "under_stock_value_3mo": 0.0,
+      "unit_cost": 5.5
+    },
+    {
+      "department": "A1",
+      "is_deprecated": false,
+      "name": "Widget Beta Test Item*1/1/26",
+      "not_in_turn_report": false,
+      "over_stock_qty_3mo": 0.0,
+      "qty_on_hand": 5.0,
+      "qty_sold_90": 12.0,
+      "sku": "BASE002",
+      "supplier": "S001",
+      "under_stock_qty_3mo": -3.0,
+      "under_stock_value_3mo": -15.0,
+      "unit_cost": 5.0
+    },
+    {
+      "department": null,
+      "is_deprecated": false,
+      "name": "Widget Gamma Baseline Only*1/1/26",
+      "not_in_turn_report": true,
+      "qty_on_hand": 8.0,
+      "sku": "BASE003",
+      "supplier": null,
+      "unit_cost": 5.0
+    },
+    {
+      "department": "A1",
+      "is_deprecated": false,
+      "name": "Widget Delta Fast Seller*1/1/26",
+      "not_in_turn_report": false,
+      "over_stock_qty_3mo": 0.0,
+      "qty_on_hand": 20.0,
+      "qty_sold_90": 100.0,
+      "sku": "BASE004",
+      "supplier": "S002",
+      "under_stock_qty_3mo": -2.0,
+      "under_stock_value_3mo": -10.0,
+      "unit_cost": 5.0
+    },
+    {
+      "department": "B1",
+      "is_deprecated": false,
+      "name": "Widget Epsilon Slow Mover*1/1/26",
+      "not_in_turn_report": false,
+      "over_stock_qty_3mo": 15.0,
+      "qty_on_hand": 15.0,
+      "qty_sold_90": 0.0,
+      "sku": "BASE005",
+      "supplier": "S003",
+      "under_stock_qty_3mo": 0.0,
+      "under_stock_value_3mo": 0.0,
+      "unit_cost": 5.0
+    },
+    {
+      "department": null,
+      "is_deprecated": true,
+      "name": "zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz",
+      "not_in_turn_report": true,
+      "qty_on_hand": 2.0,
+      "sku": "DEP001",
+      "supplier": null,
+      "unit_cost": 5.0
+    },
+    {
+      "department": null,
+      "is_deprecated": false,
+      "name": "Turn Only New Item*1/1/26",
+      "not_in_turn_report": false,
+      "over_stock_qty_3mo": 0.0,
+      "qty_on_hand": 3.0,
+      "qty_sold_90": 6.0,
+      "sku": "TURN001",
+      "supplier": null,
+      "under_stock_qty_3mo": 0.0,
+      "under_stock_value_3mo": 0.0,
+      "unit_cost": null
+    },
+    {
+      "department": null,
+      "is_deprecated": false,
+      "name": "Under Report Only Item*1/1/26",
+      "not_in_turn_report": false,
+      "over_stock_qty_3mo": 0.0,
+      "qty_on_hand": 0.0,
+      "qty_sold_90": 8.0,
+      "sku": "UNDER001",
+      "supplier": null,
+      "under_stock_qty_3mo": -5.33,
+      "under_stock_value_3mo": -42.64,
+      "unit_cost": null
+    }
+  ],
+  "period_summary": {
+    "dept_values": {
+      "A1": 180.0,
+      "B1": 111.0,
+      "C1": 0.0
+    },
+    "import_type": "baseline_enrichment",
+    "overstock_alerts": [
+      {
+        "code": "BASE001",
+        "dept": "A1",
+        "name": "Widget Alpha Test Item*1/1/26",
+        "on_hand": 10.0,
+        "over_qty": 5.0,
+        "over_value": 27.5,
+        "qty_sold_90": 0.0
+      },
+      {
+        "code": "BASE005",
+        "dept": "B1",
+        "name": "Widget Epsilon Slow Mover*1/1/26",
+        "on_hand": 15.0,
+        "over_qty": 15.0,
+        "over_value": 75.0,
+        "qty_sold_90": 0.0
+      }
+    ],
+    "overstock_items": 2,
+    "period_end": "31/01/2026",
+    "period_start": "01/01/2026",
+    "reorder_alerts": [
+      {
+        "code": "BASE002",
+        "dept": "A1",
+        "name": "Widget Beta Test Item*1/1/26",
+        "on_hand": 5.0,
+        "qty_sold_90": 12.0,
+        "under_qty": -3.0,
+        "under_value": -15.0
+      },
+      {
+        "code": "BASE004",
+        "dept": "A1",
+        "name": "Widget Delta Fast Seller*1/1/26",
+        "on_hand": 20.0,
+        "qty_sold_90": 100.0,
+        "under_qty": -2.0,
+        "under_value": -10.0
+      },
+      {
+        "code": "UNDER001",
+        "dept": "C1",
+        "name": "Under Report Only Item*1/1/26",
+        "on_hand": 0.0,
+        "qty_sold_90": 8.0,
+        "under_qty": -5.33,
+        "under_value": -42.64
+      }
+    ],
+    "sales_items": [
+      {
+        "code": "BASE002",
+        "dept": "A1",
+        "name": "Widget Beta Test Item*1/1/26",
+        "qty_90": 12.0,
+        "sales_value": 60.0
+      },
+      {
+        "code": "BASE004",
+        "dept": "A1",
+        "name": "Widget Delta Fast Seller*1/1/26",
+        "qty_90": 100.0,
+        "sales_value": 500.0
+      },
+      {
+        "code": "TURN001",
+        "dept": "B1",
+        "name": "Turn Only New Item*1/1/26",
+        "qty_90": 6.0,
+        "sales_value": 72.0
+      },
+      {
+        "code": "UNDER001",
+        "dept": "C1",
+        "name": "Under Report Only Item*1/1/26",
+        "qty_90": 8.0,
+        "sales_value": 64.0
+      }
+    ],
+    "slow_moving": 2,
+    "slow_moving_items": [
+      {
+        "code": "BASE001",
+        "dept": "A1",
+        "name": "Widget Alpha Test Item*1/1/26",
+        "on_hand": 10.0,
+        "qty_sold_90": 0.0
+      },
+      {
+        "code": "BASE005",
+        "dept": "B1",
+        "name": "Widget Epsilon Slow Mover*1/1/26",
+        "on_hand": 15.0,
+        "qty_sold_90": 0.0
+      }
+    ],
+    "stock_health": {
+      "Healthy": 1,
+      "Overstocked": 2,
+      "Slow Moving": 0,
+      "Understocked": 3
+    },
+    "top_sellers": [
+      {
+        "code": "BASE002",
+        "name": "Widget Beta Test Item*1/1/26",
+        "qty_90": 12.0
+      },
+      {
+        "code": "BASE004",
+        "name": "Widget Delta Fast Seller*1/1/26",
+        "qty_90": 100.0
+      },
+      {
+        "code": "TURN001",
+        "name": "Turn Only New Item*1/1/26",
+        "qty_90": 6.0
+      },
+      {
+        "code": "UNDER001",
+        "name": "Under Report Only Item*1/1/26",
+        "qty_90": 8.0
+      }
+    ],
+    "total_sales_90": 126.0,
+    "understock_items": 3
+  }
+}
