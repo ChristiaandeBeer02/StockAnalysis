@@ -12,6 +12,10 @@ _PERIOD_RE = re.compile(
     r"Period:\s*(\d{2}/\d{2}/\d{4})\s*to\s*(\d{2}/\d{2}/\d{4})",
     re.IGNORECASE,
 )
+_OPTIMUM_MONTHS_RE = re.compile(
+    r"Optimum Stock Holding In Months:.*?(\d+(?:\.\d+)?)",
+    re.IGNORECASE,
+)
 _DEPRECATED_RE = re.compile(DEPRECATED_PATTERN, re.IGNORECASE)
 
 _SKIP_PREFIXES = (
@@ -76,6 +80,14 @@ def extract_period(lines: list[str]) -> tuple[str | None, str | None]:
         if match:
             return match.group(1), match.group(2)
     return None, None
+
+
+def extract_optimum_months(lines: list[str]) -> float | None:
+    for line in lines[:30]:
+        match = _OPTIMUM_MONTHS_RE.search(line)
+        if match:
+            return parse_float(match.group(1))
+    return None
 
 
 def should_skip_line(line: str) -> bool:

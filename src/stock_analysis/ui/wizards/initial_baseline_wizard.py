@@ -114,12 +114,17 @@ class InitialBaselineWizard(QDialog):
             return
 
         parsed = self._parsed
-        total_value = sum(r.stock_value for r in parsed.rows)
+        from stock_analysis.importers.item_filters import should_skip_item
+
+        eligible_rows = [
+            row for row in parsed.rows if not should_skip_item(row.code, row.description)
+        ]
+        total_value = sum(r.stock_value for r in eligible_rows)
         period = "—"
         if parsed.period_start and parsed.period_end:
             period = f"{parsed.period_start} to {parsed.period_end}"
 
-        self._parsed_label.setText(f"{parsed.stats.total_rows:,}")
+        self._parsed_label.setText(f"{len(eligible_rows):,}")
         self._junk.setText(
             f"{parsed.stats.junk_rows:,}  "
             f"(metadata lines skipped: {parsed.stats.metadata_skipped_rows:,})"
@@ -127,7 +132,7 @@ class InitialBaselineWizard(QDialog):
         self._deprecated.setText(str(parsed.stats.deprecated_rows))
         self._stock_value.setText(f"R {total_value:,.2f}")
         self._period.setText(period)
-        self._import_btn.setEnabled(parsed.stats.total_rows > 0)
+        self._import_btn.setEnabled(len(eligible_rows) > 0)
 
     def _eligible_row_count(self) -> int:
         if not self._parsed:

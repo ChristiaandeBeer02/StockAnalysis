@@ -99,6 +99,13 @@ class AppState(Base):
     value: Mapped[str] = mapped_column(String(256))
 
 
+class DepartmentNickname(Base):
+    __tablename__ = "department_nicknames"
+
+    code: Mapped[str] = mapped_column(String(32), primary_key=True)
+    nickname: Mapped[str] = mapped_column(String(128), default="")
+
+
 class PeriodTurnLine(Base):
     __tablename__ = "period_turn_lines"
 

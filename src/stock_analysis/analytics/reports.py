@@ -5,22 +5,44 @@ from __future__ import annotations
 from sqlalchemy.orm import Session
 
 from stock_analysis.analytics.dashboard import build_period_summary, get_period_lines
+from stock_analysis.analytics.lookback import (
+    DEFAULT_LOOKBACK,
+    build_prior_qty_map,
+    qty_sold,
+)
+from stock_analysis.analytics.metrics import (
+    effective_on_hand,
+    effective_unit_cost,
+    stock_value,
+)
 from stock_analysis.analytics.queries import baseline_qty_map
 from stock_analysis.db.models import ImportBatch
 
 
-def slow_moving_report(session: Session, batch_id: int | None = None) -> list[dict]:
+def slow_moving_report(
+    session: Session,
+    batch_id: int | None = None,
+    lookback_days: int = DEFAULT_LOOKBACK,
+) -> list[dict]:
     lines = get_period_lines(session, batch_id)
     if not lines:
         return []
 
     baseline_map = baseline_qty_map(session, [item.id for _, item in lines])
+    prior_map, lookback_60_source = build_prior_qty_map(session, batch_id)
+    use_two_period_60 = lookback_days == 60 and lookback_60_source == "two_period"
     report: list[dict] = []
     for line, item in lines:
-        qty = baseline_map.get(item.id, line.on_hand)
-        if line.qty_sold_90 != 0 or qty <= 0:
+        qty = effective_on_hand(baseline_map, item.id, line.on_hand)
+        sold = qty_sold(
+            line,
+            lookback_days,
+            prior_qty_30=prior_map.get(item.id, 0.0),
+            use_two_period_60=use_two_period_60,
+        )
+        if sold != 0 or qty <= 0:
             continue
-        cost = line.last_unit_cost or item.unit_cost or 0
+        cost = effective_unit_cost(line, item)
         report.append(
             {
                 "sku": item.sku,
@@ -28,8 +50,8 @@ def slow_moving_report(session: Session, batch_id: int | None = None) -> list[di
                 "dept": line.dept or item.department or "—",
                 "on_hand": qty,
                 "unit_cost": cost,
-                "stock_value": qty * cost,
-                "qty_sold_90": line.qty_sold_90,
+                "stock_value": stock_value(qty, cost),
+                "qty_sold": sold,
             }
         )
 
@@ -37,26 +59,38 @@ def slow_moving_report(session: Session, batch_id: int | None = None) -> list[di
     return report
 
 
-def abc_report(session: Session, batch_id: int | None = None) -> list[dict]:
+def abc_report(
+    session: Session,
+    batch_id: int | None = None,
+    lookback_days: int = DEFAULT_LOOKBACK,
+) -> list[dict]:
     lines = get_period_lines(session, batch_id)
     if not lines:
         return []
 
     baseline_map = baseline_qty_map(session, [item.id for _, item in lines])
+    prior_map, lookback_60_source = build_prior_qty_map(session, batch_id)
+    use_two_period_60 = lookback_days == 60 and lookback_60_source == "two_period"
     rows: list[dict] = []
     for line, item in lines:
-        cost = line.last_unit_cost or item.unit_cost or 0
-        sales_value = line.qty_sold_90 * cost
-        qty = baseline_map.get(item.id, line.on_hand)
+        cost = effective_unit_cost(line, item)
+        sold = qty_sold(
+            line,
+            lookback_days,
+            prior_qty_30=prior_map.get(item.id, 0.0),
+            use_two_period_60=use_two_period_60,
+        )
+        sales_val = sold * cost
+        qty = effective_on_hand(baseline_map, item.id, line.on_hand)
         rows.append(
             {
                 "sku": item.sku,
                 "name": item.name[:80],
                 "dept": line.dept or item.department or "—",
-                "qty_sold_90": line.qty_sold_90,
-                "sales_value": sales_value,
+                "qty_sold": sold,
+                "sales_value": sales_val,
                 "on_hand": qty,
-                "stock_value": qty * cost,
+                "stock_value": stock_value(qty, cost),
             }
         )
 
@@ -70,12 +104,12 @@ def abc_report(session: Session, batch_id: int | None = None) -> list[dict]:
 
     cumulative = 0.0
     for row in rows:
-        previous = cumulative
         cumulative += row["sales_value"]
-        row["cumulative_pct"] = (cumulative / total_sales) * 100
-        if previous / total_sales < 0.80:
+        share = cumulative / total_sales
+        row["cumulative_pct"] = share * 100
+        if share <= 0.80:
             row["abc_class"] = "A"
-        elif cumulative / total_sales <= 0.95:
+        elif share <= 0.95:
             row["abc_class"] = "B"
         else:
             row["abc_class"] = "C"
@@ -83,9 +117,12 @@ def abc_report(session: Session, batch_id: int | None = None) -> list[dict]:
 
 
 def abc_summary(
-    session: Session, batch_id: int | None = None, report: list[dict] | None = None
+    session: Session,
+    batch_id: int | None = None,
+    report: list[dict] | None = None,
+    lookback_days: int = DEFAULT_LOOKBACK,
 ) -> dict[str, int]:
-    rows = report if report is not None else abc_report(session, batch_id)
+    rows = report if report is not None else abc_report(session, batch_id, lookback_days)
     summary = {"A": 0, "B": 0, "C": 0}
     for row in rows:
         summary[row["abc_class"]] += 1

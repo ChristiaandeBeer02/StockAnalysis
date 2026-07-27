@@ -29,7 +29,16 @@ from stock_analysis.analytics.dashboard import (
     filter_stock_rows,
     list_period_batches,
 )
+from stock_analysis.analytics.lookback import (
+    get_lookback_days,
+    lookback_label,
+    qty_column_label,
+    sales_period_label,
+    sales_value_label,
+    units_sold_label,
+)
 from stock_analysis.analytics.dashboard_config import get_dashboard_config
+from stock_analysis.analytics.department_names import display_dept, load_nickname_map
 from stock_analysis.db.session import get_session, has_enrichment, has_initial_baseline
 from stock_analysis.ui.export_dialog import prompt_export_excel, prompt_export_pdf
 from stock_analysis.ui.pages.stock_take_page import StockTakePage
@@ -43,6 +52,11 @@ from stock_analysis.ui.widgets.data_table import DataTable
 from stock_analysis.ui.widgets.empty_state import EmptyState
 from stock_analysis.ui.widgets.kpi_card import KpiCard
 from stock_analysis.ui.widgets.report_header import ReportHeader
+from stock_analysis.ui.widgets.sales_period_combo import (
+    create_sales_period_combo,
+    sync_sales_period_combo,
+    update_lookback_tooltip,
+)
 
 _STOCK_ALERT_MODES = {
     "understock": {
@@ -59,14 +73,14 @@ _STOCK_ALERT_MODES = {
 
 _SLOW_MODE = {
     "title": "Slow Moving Items",
-    "headers": ["SKU", "Name", "On Hand", "Sales (90d)", "Dept"],
+    "headers": ["SKU", "Name", "On Hand", "Sales", "Dept"],
     "filename": "slow_moving",
 }
 
 _SALES_MODE = {
-    "title": "Sales (90d)",
-    "headers": ["SKU", "Name", "Dept", "Qty (90d)", "Sales Value"],
-    "filename": "sales_90d",
+    "title": "Sales",
+    "headers": ["SKU", "Name", "Dept", "Qty", "Sales Value"],
+    "filename": "sales",
 }
 
 _OVERVIEW_TAB = 0
@@ -103,6 +117,7 @@ class HomePage(QWidget):
         self._batch_ids: list[int] = []
         self._period: dict = {}
         self._departments: list[str] = []
+        self._nickname_map: dict[str, str] = {}
         self._alert_type = "understock"
         self._alerts_dept: str | None = None
         self._sales_dept: str | None = None
@@ -114,6 +129,7 @@ class HomePage(QWidget):
         self._alerts_display_rows: list[list] = []
         self._sales_display_rows: list[list] = []
         self._slow_display_rows: list[list] = []
+        self._lookback_days = 90
 
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
@@ -161,6 +177,11 @@ class HomePage(QWidget):
         overview_layout.setSpacing(12)
 
         self._overview_header = ReportHeader("Stock Overview", "")
+        self._overview_lookback = create_sales_period_combo(
+            self, on_changed=self._on_lookback_changed
+        )
+        self._overview_header.add_control(QLabel("Sales period:"))
+        self._overview_header.add_control(self._overview_lookback)
         overview_layout.addWidget(self._overview_header, 0, 0, 1, 6)
 
         self._kpi_skus = KpiCard("Total SKUs")
@@ -168,7 +189,7 @@ class HomePage(QWidget):
         self._kpi_overstock = KpiCard("Overstocked", filter_key="overstock")
         self._kpi_understock = KpiCard("Understocked", filter_key="understock")
         self._kpi_slow = KpiCard("Slow Moving", filter_key="slow")
-        self._kpi_sales = KpiCard("Sales (90d)", filter_key="sales")
+        self._kpi_sales = KpiCard("Sales Value", filter_key="sales")
         self._kpi_overstock.set_accent("warning")
         self._kpi_understock.set_accent("danger")
         self._kpi_slow.set_accent("amber")
@@ -196,7 +217,7 @@ class HomePage(QWidget):
         self._dept_chart.point_clicked.connect(self._on_dept_chart_click)
         overview_layout.addWidget(self._dept_chart, 2, 0, 1, 6)
 
-        self._sellers_tile = DashboardTile("Top Sellers (90d)")
+        self._sellers_tile = DashboardTile("Top Sellers")
         self._sellers_table = DataTable()
         self._sellers_table.setSortingEnabled(False)
         self._sellers_table.setSizePolicy(
@@ -253,13 +274,15 @@ class HomePage(QWidget):
         self._alerts_tile.add_action(export_pdf)
         self._alerts_table = DataTable()
         self._alerts_table.enable_viewport_scrolling()
+        self._alerts_table.enable_compact_rows()
         self._alerts_table.doubleClicked.connect(
             lambda index: self._on_table_double_click(self._alerts_table, index)
         )
+        alerts_panel, self._alerts_footer = self._build_table_panel(self._alerts_table)
         self._alerts_tile.setSizePolicy(
             QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding
         )
-        self._alerts_tile.set_content(self._alerts_table)
+        self._alerts_tile.set_content(alerts_panel)
         alerts_layout.addWidget(self._alerts_tile, stretch=1)
 
         sales_tab = QWidget()
@@ -277,7 +300,7 @@ class HomePage(QWidget):
         sales_filters.addStretch()
         sales_layout.addLayout(sales_filters)
 
-        self._sales_tile = DashboardTile("Sales (90d)")
+        self._sales_tile = DashboardTile("Units Sold")
         sales_export_xlsx = QPushButton("Export Excel…")
         sales_export_pdf = QPushButton("Export PDF…")
         sales_export_xlsx.clicked.connect(lambda: self._export_table("sales", "excel"))
@@ -286,13 +309,15 @@ class HomePage(QWidget):
         self._sales_tile.add_action(sales_export_pdf)
         self._sales_table = DataTable()
         self._sales_table.enable_viewport_scrolling()
+        self._sales_table.enable_compact_rows()
         self._sales_table.doubleClicked.connect(
             lambda index: self._on_table_double_click(self._sales_table, index)
         )
+        sales_panel, self._sales_footer = self._build_table_panel(self._sales_table)
         self._sales_tile.setSizePolicy(
             QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding
         )
-        self._sales_tile.set_content(self._sales_table)
+        self._sales_tile.set_content(sales_panel)
         sales_layout.addWidget(self._sales_tile, stretch=1)
 
         slow_tab = QWidget()
@@ -319,13 +344,15 @@ class HomePage(QWidget):
         self._slow_tile.add_action(slow_export_pdf)
         self._slow_table = DataTable()
         self._slow_table.enable_viewport_scrolling()
+        self._slow_table.enable_compact_rows()
         self._slow_table.doubleClicked.connect(
             lambda index: self._on_table_double_click(self._slow_table, index)
         )
+        slow_panel, self._slow_footer = self._build_table_panel(self._slow_table)
         self._slow_tile.setSizePolicy(
             QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding
         )
-        self._slow_tile.set_content(self._slow_table)
+        self._slow_tile.set_content(slow_panel)
         slow_layout.addWidget(self._slow_tile, stretch=1)
 
         import_tab = QWidget()
@@ -346,6 +373,11 @@ class HomePage(QWidget):
         movement_header.addStretch()
         movement_header.addWidget(QLabel("Period:"))
         movement_header.addWidget(self._period_combo)
+        self._import_lookback = create_sales_period_combo(
+            self, on_changed=self._on_lookback_changed
+        )
+        movement_header.addWidget(QLabel("Sales period:"))
+        movement_header.addWidget(self._import_lookback)
         movement_header.addWidget(self._import_btn)
         import_layout.addLayout(movement_header)
 
@@ -385,6 +417,27 @@ class HomePage(QWidget):
 
         self._dashboard.hide()
         self._layout.addWidget(self._dashboard, 0, 0, 1, 6)
+
+    def _on_lookback_changed(self) -> None:
+        self._sync_lookback_combos()
+        self._load_period_data()
+
+    def _sync_lookback_combos(self) -> None:
+        sync_sales_period_combo(self._overview_lookback)
+        sync_sales_period_combo(self._import_lookback)
+        self._lookback_days = self._overview_lookback.currentData() or 90
+        self._update_lookback_labels()
+
+    def _update_lookback_labels(self) -> None:
+        days = self._lookback_days
+        label = lookback_label(days)
+        self._kpi_sales.set_title(sales_value_label(days))
+        self._sellers_tile.set_title(f"Top Sellers ({label})")
+        self._sales_tile.set_title(units_sold_label(days))
+        _SLOW_MODE["headers"][3] = sales_period_label(days)
+        _SALES_MODE["title"] = units_sold_label(days)
+        _SALES_MODE["headers"][3] = qty_column_label(days)
+        _SALES_MODE["filename"] = f"sales_{label}"
 
     def _on_home_tab_changed(self, index: int) -> None:
         on_import = index == _IMPORT_TAB
@@ -530,9 +583,25 @@ class HomePage(QWidget):
             combo.clear()
             combo.addItem("All departments", None)
             for dept in sorted(departments):
-                combo.addItem(dept, dept)
+                combo.addItem(display_dept(dept, self._nickname_map), dept)
             self._set_dept_combo(combo, departments, current)
             combo.blockSignals(False)
+
+    def _build_table_panel(self, table: DataTable) -> tuple[QWidget, QLabel]:
+        container = QWidget()
+        layout = QVBoxLayout(container)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(4)
+        layout.addWidget(table, stretch=1)
+        footer = QLabel("")
+        footer.setObjectName("tableFooter")
+        footer.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        layout.addWidget(footer)
+        return container, footer
+
+    @staticmethod
+    def _format_total(label: str, amount: float) -> str:
+        return f"Total {label}: R {amount:,.2f}"
 
     def _configure_alerts_table_columns(self) -> None:
         header = self._alerts_table.horizontalHeader()
@@ -576,9 +645,10 @@ class HomePage(QWidget):
         self._sellers_table.setTextElideMode(Qt.TextElideMode.ElideRight)
 
     def _populate_sellers_table(self, top_sellers: list[dict]) -> None:
-        self._sellers_table.set_headers(["#", "Code", "Product", "Qty 90d"])
+        qty_header = qty_column_label(self._lookback_days)
+        self._sellers_table.set_headers(["#", "Code", "Product", qty_header])
         rows = [
-            [str(i), s["code"], s["name"], f"{s['qty_90']:g}"]
+            [str(i), s["code"], s["name"], f"{s['qty_sold']:g}"]
             for i, s in enumerate(top_sellers, start=1)
         ]
         self._sellers_table.set_rows(rows)
@@ -596,8 +666,14 @@ class HomePage(QWidget):
         self._configure_alerts_table_columns()
         sub = f"Showing {len(filtered):,} of {len(rows):,}"
         if self._alerts_dept:
-            sub += f" · Dept: {self._alerts_dept}"
+            sub += f" · Dept: {display_dept(self._alerts_dept, self._nickname_map)}"
         self._alerts_tile.set_subtitle(sub)
+        if self._alert_type == "understock":
+            total = sum(r["under_value"] for r in filtered)
+            self._alerts_footer.setText(self._format_total("Under Value", total))
+        else:
+            total = sum(r["over_value"] for r in filtered)
+            self._alerts_footer.setText(self._format_total("Over Value", total))
 
     def _apply_sales_filter(self) -> None:
         filtered = filter_stock_rows(self._sales_rows, dept=self._sales_dept)
@@ -605,8 +681,8 @@ class HomePage(QWidget):
             [
                 r["code"],
                 r["name"],
-                r.get("dept", "—"),
-                f"{r['qty_90']:g}",
+                display_dept(r.get("dept", "—"), self._nickname_map),
+                f"{r['qty_sold']:g}",
                 f"R {r['sales_value']:,.2f}",
             ]
             for r in filtered
@@ -616,8 +692,10 @@ class HomePage(QWidget):
         self._configure_sales_table_columns()
         sub = f"Showing {len(filtered):,} of {len(self._sales_rows):,}"
         if self._sales_dept:
-            sub += f" · Dept: {self._sales_dept}"
+            sub += f" · Dept: {display_dept(self._sales_dept, self._nickname_map)}"
         self._sales_tile.set_subtitle(sub)
+        total = sum(r["sales_value"] for r in filtered)
+        self._sales_footer.setText(self._format_total("Sales Value", total))
 
     def _apply_slow_filter(self) -> None:
         filtered = filter_stock_rows(self._slow_rows, dept=self._slow_dept)
@@ -626,8 +704,8 @@ class HomePage(QWidget):
                 r["code"],
                 r["name"],
                 f"{r['on_hand']:g}",
-                f"{r['qty_sold_90']:g}",
-                r.get("dept", "—"),
+                f"{r['qty_sold']:g}",
+                display_dept(r.get("dept", "—"), self._nickname_map),
             ]
             for r in filtered
         ]
@@ -636,8 +714,10 @@ class HomePage(QWidget):
         self._configure_slow_table_columns()
         sub = f"Showing {len(filtered):,} of {len(self._slow_rows):,}"
         if self._slow_dept:
-            sub += f" · Dept: {self._slow_dept}"
+            sub += f" · Dept: {display_dept(self._slow_dept, self._nickname_map)}"
         self._slow_tile.set_subtitle(sub)
+        total = sum(r["stock_value"] for r in filtered)
+        self._slow_footer.setText(self._format_total("Stock Value", total))
 
     def _rows_to_display(self, rows: list[dict], mode: str) -> list[list]:
         if mode == "overstock":
@@ -711,8 +791,22 @@ class HomePage(QWidget):
             config = get_dashboard_config(session)
             summaries = load_summaries(session)
             summary = summaries.baseline
-            period = get_period_summary_cached(session, self._selected_batch_id)
-            comparison = build_period_comparison(session, self._selected_batch_id)
+            self._lookback_days = get_lookback_days(session)
+            period = get_period_summary_cached(
+                session, self._selected_batch_id, self._lookback_days
+            )
+            comparison = build_period_comparison(
+                session, self._selected_batch_id, self._lookback_days
+            )
+            self._nickname_map = load_nickname_map(session)
+
+        self._sync_lookback_combos()
+        update_lookback_tooltip(
+            self._overview_lookback, period.get("lookback_60_source") if period else None
+        )
+        update_lookback_tooltip(
+            self._import_lookback, period.get("lookback_60_source") if period else None
+        )
 
         self._period = period or {}
         self._kpi_skus.set_value(f"{summary['item_count']:,}")
@@ -738,22 +832,24 @@ class HomePage(QWidget):
         self._tabs.setTabVisible(_IMPORT_TAB, True)
 
         if period:
-            self._kpi_overstock.set_value(f"{period.get('overstock_items', 0):,}")
-            self._kpi_understock.set_value(f"{period.get('understock_items', 0):,}")
-            self._kpi_slow.set_value(f"{period.get('slow_moving', 0):,}")
-            self._kpi_sales.set_value(f"{period.get('total_sales_90', 0):,.0f}")
+            self._kpi_overstock.set_value(f"R {period.get('overstock_value', 0):,.2f}")
+            self._kpi_understock.set_value(f"R {period.get('understock_value', 0):,.2f}")
+            self._kpi_slow.set_value(f"R {period.get('slow_moving_value', 0):,.2f}")
+            self._kpi_sales.set_value(f"R {period.get('total_sales_value', 0):,.2f}")
 
             for key, card in (
-                ("overstock_items", self._kpi_overstock),
-                ("understock_items", self._kpi_understock),
-                ("slow_moving", self._kpi_slow),
-                ("total_sales_90", self._kpi_sales),
+                ("overstock_value", self._kpi_overstock),
+                ("understock_value", self._kpi_understock),
+                ("slow_moving_value", self._kpi_slow),
+                ("total_sales_value", self._kpi_sales),
             ):
                 text, direction = _format_delta(comparison.get(f"{key}_delta_pct"))
                 card.set_delta(text, direction)
 
             if show_charts:
-                dept_view, dept_labels = build_dept_values_chart(period.get("dept_values", {}))
+                dept_view, dept_labels = build_dept_values_chart(
+                    period.get("dept_values", {}), self._nickname_map
+                )
                 self._dept_chart.set_chart_view(dept_view, dept_labels)
                 self._populate_sellers_table(period.get("top_sellers", []))
 
@@ -816,6 +912,8 @@ class HomePage(QWidget):
         self._import_btn.setEnabled(enriched)
         self._partial_note.setVisible(not enriched)
         self._period_combo.setVisible(enriched)
+        self._overview_lookback.setVisible(enriched)
+        self._import_lookback.setVisible(enriched)
         self._tabs.setVisible(True)
 
         if enriched:

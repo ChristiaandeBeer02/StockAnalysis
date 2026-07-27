@@ -202,7 +202,26 @@ def test_apply_initial_baseline_uses_cached_parse(session: Session, tmp_path: Pa
     result = apply_initial_baseline(session, path, parsed=parsed)
     session.commit()
 
-    assert result.items_imported == parsed.stats.total_rows
+    from stock_analysis.importers.item_filters import should_skip_item
+
+    eligible = sum(
+        1 for row in parsed.rows if not should_skip_item(row.code, row.description)
+    )
+    assert result.items_imported == eligible
+
+
+def test_baseline_import_skips_junk_rows(session: Session, tmp_path: Path) -> None:
+    csv_path = tmp_path / "junk.csv"
+    _write_baseline_csv(csv_path, ["GOOD001", "GOOD002"])
+    lines = csv_path.read_text(encoding="utf-8").splitlines()
+    lines.insert(-1, "Totals:,,0.00,,,,,,,R0.00,,")
+    csv_path.write_text("\n".join(lines), encoding="utf-8")
+
+    result = apply_initial_baseline(session, csv_path)
+    session.commit()
+
+    assert result.items_imported == 2
+    assert session.scalar(select(func.count(Item.id))) == 2
 
 
 def test_init_db_migrates_legacy_analysis_results_schema(tmp_path: Path) -> None:

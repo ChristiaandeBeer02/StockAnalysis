@@ -13,6 +13,7 @@ from sqlalchemy import delete, desc, func, select, update
 from sqlalchemy.orm import Session
 
 from stock_analysis.analytics.dashboard import build_period_summary, save_analysis_result
+from stock_analysis.analytics.metrics import DEFAULT_OPTIMUM_STOCK_MONTHS, effective_unit_cost_expr
 from stock_analysis.analytics.stock_take import StockTakeComparison, compare_stock_take
 from stock_analysis.baseline.change_log import log_change
 from stock_analysis.db.models import (
@@ -28,6 +29,7 @@ from stock_analysis.db.models import (
     StockTakeSession,
 )
 from stock_analysis.db.session import get_latest_baseline_version, has_initial_baseline, set_app_state
+from stock_analysis.importers.iq_retail_parser import extract_optimum_months, read_export_lines
 from stock_analysis.importers.item_filters import should_skip_item
 from stock_analysis.importers.stockholding_parser import (
     StockholdingParseResult,
@@ -200,7 +202,7 @@ def apply_initial_baseline(
     return InitialImportSummary(
         import_batch_id=batch.id,
         baseline_version=version_number,
-        items_imported=parsed.stats.total_rows,
+        items_imported=total_rows,
         deprecated_count=parsed.stats.deprecated_rows,
         total_stock_value=total_value,
         period_start=parsed.period_start,
@@ -256,6 +258,12 @@ def apply_turn_import(
 ) -> TurnImportSummary:
     merged, period_start, period_end = merge_turn_reports(turn_path, turnunder_path)
     deprecated = sum(1 for r in merged if r.is_deprecated)
+
+    turn_lines = read_export_lines(turn_path)
+    parsed_optimum = extract_optimum_months(turn_lines)
+    optimum_months = (
+        parsed_optimum if parsed_optimum and parsed_optimum > 0 else DEFAULT_OPTIMUM_STOCK_MONTHS
+    )
 
     batch = ImportBatch(
         import_type=import_type,
@@ -361,6 +369,8 @@ def apply_turn_import(
 
     if import_type == "baseline_enrichment":
         set_app_state(session, "enrichment_complete", "true")
+
+    set_app_state(session, "optimum_stock_months", str(optimum_months))
 
     summary = build_period_summary(session)
     if summary:
@@ -623,11 +633,26 @@ def get_baseline_summary(session: Session) -> dict:
     )
     total_qty = session.scalar(select(func.sum(BaselineItem.qty_on_hand))) or 0.0
 
+    latest_turn_subq = (
+        select(
+            PeriodTurnLine.item_id,
+            func.max(PeriodTurnLine.id).label("latest_line_id"),
+        )
+        .group_by(PeriodTurnLine.item_id)
+        .subquery()
+    )
+
     total_value = session.scalar(
-        select(func.sum(Item.unit_cost * BaselineItem.qty_on_hand))
-        .select_from(Item)
-        .join(BaselineItem, BaselineItem.item_id == Item.id)
-        .where(Item.unit_cost.isnot(None), BaselineItem.qty_on_hand != 0)
+        select(
+            func.sum(
+                BaselineItem.qty_on_hand
+                * effective_unit_cost_expr(PeriodTurnLine.last_unit_cost, Item.unit_cost)
+            )
+        )
+        .select_from(BaselineItem)
+        .join(Item, Item.id == BaselineItem.item_id)
+        .outerjoin(latest_turn_subq, latest_turn_subq.c.item_id == BaselineItem.item_id)
+        .outerjoin(PeriodTurnLine, PeriodTurnLine.id == latest_turn_subq.c.latest_line_id)
     ) or 0.0
 
     version = get_latest_baseline_version(session)

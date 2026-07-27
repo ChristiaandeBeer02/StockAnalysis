@@ -88,3 +88,71 @@ def test_get_baseline_summary_uses_sql_aggregate(session: Session) -> None:
     summary = get_baseline_summary(session)
     assert summary["total_value"] == pytest.approx(10.0)
     assert "overstock_items" not in summary
+
+
+def test_get_baseline_summary_prefers_latest_turn_cost(session: Session) -> None:
+    from stock_analysis.db.models import BaselineItem, BaselineVersion
+
+    batch = ImportBatch(import_type="period_turn", file_name="turn.csv", status="applied")
+    session.add(batch)
+    session.flush()
+    item = Item(sku="COST1", name="Cost Test", unit_cost=5.0)
+    session.add(item)
+    session.flush()
+    version = BaselineVersion(version_number=1, source_type="test")
+    session.add(version)
+    session.flush()
+    session.add(
+        BaselineItem(
+            item_id=item.id,
+            qty_on_hand=10,
+            baseline_version_id=version.id,
+            last_update_source="test",
+        )
+    )
+    session.add(
+        PeriodTurnLine(
+            import_batch_id=batch.id,
+            item_id=item.id,
+            on_hand=10.0,
+            last_unit_cost=8.0,
+        )
+    )
+    session.commit()
+
+    summary = get_baseline_summary(session)
+    assert summary["total_value"] == pytest.approx(80.0)
+
+
+def test_get_baseline_summary_zero_turn_cost_falls_back_to_item(session: Session) -> None:
+    from stock_analysis.db.models import BaselineItem, BaselineVersion
+
+    batch = ImportBatch(import_type="period_turn", file_name="turn.csv", status="applied")
+    session.add(batch)
+    session.flush()
+    item = Item(sku="COST0", name="Zero Turn Cost", unit_cost=5.0)
+    session.add(item)
+    session.flush()
+    version = BaselineVersion(version_number=1, source_type="test")
+    session.add(version)
+    session.flush()
+    session.add(
+        BaselineItem(
+            item_id=item.id,
+            qty_on_hand=10,
+            baseline_version_id=version.id,
+            last_update_source="test",
+        )
+    )
+    session.add(
+        PeriodTurnLine(
+            import_batch_id=batch.id,
+            item_id=item.id,
+            on_hand=10.0,
+            last_unit_cost=0.0,
+        )
+    )
+    session.commit()
+
+    summary = get_baseline_summary(session)
+    assert summary["total_value"] == pytest.approx(50.0)

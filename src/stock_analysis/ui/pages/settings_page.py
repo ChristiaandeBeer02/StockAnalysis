@@ -6,6 +6,7 @@ from PySide6.QtWidgets import (
     QGroupBox,
     QLabel,
     QPushButton,
+    QStackedWidget,
     QVBoxLayout,
     QWidget,
 )
@@ -13,13 +14,24 @@ from PySide6.QtWidgets import (
 from stock_analysis.analytics.dashboard_config import get_dashboard_config, save_dashboard_config
 from stock_analysis.config import APP_NAME, APP_VERSION, get_app_data_dir, get_database_path
 from stock_analysis.db.session import get_session
+from stock_analysis.ui.pages.department_naming_page import DepartmentNamingPage
 from stock_analysis.ui.wizards.initial_baseline_wizard import InitialBaselineWizard
+
+_SETTINGS_INDEX = 0
+_NAMING_INDEX = 1
 
 
 class SettingsPage(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
-        layout = QVBoxLayout(self)
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+
+        self._stack = QStackedWidget()
+        outer.addWidget(self._stack)
+
+        self._main = QWidget()
+        layout = QVBoxLayout(self._main)
         layout.setContentsMargins(24, 24, 24, 24)
 
         form = QFormLayout()
@@ -52,6 +64,10 @@ class SettingsPage(QWidget):
         dashboard_layout.addWidget(save_dashboard)
         layout.addWidget(dashboard_group)
 
+        self._dept_naming_btn = QPushButton("Department Naming…")
+        self._dept_naming_btn.clicked.connect(self._open_department_naming)
+        layout.addWidget(self._dept_naming_btn)
+
         self._reimport_btn = QPushButton("Re-import Initial Baseline…")
         self._reimport_btn.clicked.connect(self._reimport_baseline)
         self._enrich_btn = QPushButton("Run Enrichment (Turn + Turnunder)…")
@@ -60,10 +76,28 @@ class SettingsPage(QWidget):
         layout.addWidget(self._enrich_btn)
         layout.addStretch()
 
+        self._stack.addWidget(self._main)
+
+        self._naming_page = DepartmentNamingPage()
+        self._naming_page.back_requested.connect(self._show_main)
+        self._naming_page.nicknames_saved.connect(self._on_nicknames_saved)
+        self._stack.addWidget(self._naming_page)
+
         self._on_data_changed = None
 
     def set_data_changed_callback(self, callback) -> None:
         self._on_data_changed = callback
+
+    def _show_main(self) -> None:
+        self._stack.setCurrentIndex(_SETTINGS_INDEX)
+
+    def _open_department_naming(self) -> None:
+        self._naming_page.refresh()
+        self._stack.setCurrentIndex(_NAMING_INDEX)
+
+    def _on_nicknames_saved(self) -> None:
+        if self._on_data_changed:
+            self._on_data_changed()
 
     def _save_dashboard(self) -> None:
         with get_session() as session:
@@ -95,6 +129,8 @@ class SettingsPage(QWidget):
                 self._on_data_changed()
 
     def refresh(self) -> None:
+        if self._stack.currentIndex() == _NAMING_INDEX:
+            self._naming_page.refresh()
         self._data_dir.setText(str(get_app_data_dir()))
         self._db_path.setText(str(get_database_path()))
         with get_session() as session:

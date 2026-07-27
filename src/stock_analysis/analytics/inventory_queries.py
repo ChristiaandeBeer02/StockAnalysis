@@ -7,11 +7,32 @@ from collections.abc import Iterator
 from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
-from stock_analysis.analytics.dashboard import get_latest_period_lines
+from stock_analysis.analytics.dashboard import get_period_lines
+from stock_analysis.analytics.department_names import display_dept
+from stock_analysis.analytics.metrics import effective_unit_cost
+from stock_analysis.analytics.lookback import (
+    DEFAULT_LOOKBACK,
+    build_prior_qty_map,
+    qty_sold,
+    sold_column_label,
+)
 from stock_analysis.db.models import BaselineItem, Item, PeriodTurnLine
 from stock_analysis.importers.item_filters import item_status, should_skip_item
 
-INVENTORY_HEADERS = ["SKU", "Description", "Dept", "On Hand", "Unit Cost", "Sold 90d", "Status"]
+
+def inventory_headers(lookback_days: int = DEFAULT_LOOKBACK) -> list[str]:
+    return [
+        "SKU",
+        "Description",
+        "Dept",
+        "On Hand",
+        "Unit Cost",
+        sold_column_label(lookback_days),
+        "Status",
+    ]
+
+
+INVENTORY_HEADERS = inventory_headers()
 
 
 def _status_clause(status: str, has_enrichment: bool):
@@ -71,9 +92,14 @@ def fetch_inventory_rows(
     status: str,
     has_enrichment: bool,
     dept: str | None = None,
+    nickname_map: dict[str, str] | None = None,
+    batch_id: int | None = None,
+    lookback_days: int = DEFAULT_LOOKBACK,
 ) -> list[list[str]]:
-    lines = get_latest_period_lines(session)
-    latest_turn: dict[int, PeriodTurnLine] = {item.id: line for line, item in lines}
+    lines = get_period_lines(session, batch_id) if has_enrichment else []
+    turn_by_item: dict[int, PeriodTurnLine] = {item.id: line for line, item in lines}
+    prior_map, lookback_60_source = build_prior_qty_map(session, batch_id)
+    use_two_period_60 = lookback_days == 60 and lookback_60_source == "two_period"
 
     query = _base_query(has_enrichment, search, status, dept)
     rows_db = session.execute(query).all()
@@ -82,12 +108,21 @@ def fetch_inventory_rows(
     for item, baseline in rows_db:
         if should_skip_item(item.sku, item.name):
             continue
-        unit_cost = item.unit_cost
+        turn = turn_by_item.get(item.id)
+        unit_cost = effective_unit_cost(turn, item)
         qty = baseline.qty_on_hand
         unit_cost_str = f"{unit_cost:.2f}" if unit_cost else "—"
-        turn = latest_turn.get(item.id)
-        dept_label = item.department or (turn.dept if turn else "—")
-        sold_90 = f"{turn.qty_sold_90:g}" if turn else "—"
+        dept_label = display_dept(item.department or (turn.dept if turn else None), nickname_map)
+        if turn:
+            sold = qty_sold(
+                turn,
+                lookback_days,
+                prior_qty_30=prior_map.get(item.id, 0.0),
+                use_two_period_60=use_two_period_60,
+            )
+            sold_label = f"{sold:g}"
+        else:
+            sold_label = "—"
         status_label = item_status(
             is_deprecated=item.is_deprecated,
             not_in_turn_report=item.not_in_turn_report,
@@ -100,7 +135,7 @@ def fetch_inventory_rows(
                 dept_label,
                 f"{qty:g}",
                 unit_cost_str,
-                sold_90,
+                sold_label,
                 status_label,
             ]
         )

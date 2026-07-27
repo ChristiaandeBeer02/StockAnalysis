@@ -1,7 +1,8 @@
 {
   "app_state": {
     "enrichment_complete": "true",
-    "initial_baseline_complete": "true"
+    "initial_baseline_complete": "true",
+    "optimum_stock_months": "2.0"
   },
   "enrichment": {
     "deprecated_count": 0,
@@ -79,7 +80,7 @@
       "Turn Only New Item*1/1/26",
       "B1",
       "3",
-      "\u2014",
+      "12.00",
       "6",
       "Active"
     ],
@@ -88,7 +89,7 @@
       "Under Report Only Item*1/1/26",
       "C1",
       "0",
-      "\u2014",
+      "8.00",
       "8",
       "Active"
     ]
@@ -206,27 +207,21 @@
       "C1": 0.0
     },
     "import_type": "baseline_enrichment",
+    "lookback_60_source": null,
+    "lookback_days": 90,
     "overstock_alerts": [
       {
-        "code": "BASE001",
-        "dept": "A1",
-        "name": "Widget Alpha Test Item*1/1/26",
-        "on_hand": 10.0,
-        "over_qty": 5.0,
-        "over_value": 27.5,
-        "qty_sold_90": 0.0
-      },
-      {
-        "code": "BASE005",
+        "code": "TURN001",
         "dept": "B1",
-        "name": "Widget Epsilon Slow Mover*1/1/26",
-        "on_hand": 15.0,
-        "over_qty": 15.0,
-        "over_value": 75.0,
-        "qty_sold_90": 0.0
+        "name": "Turn Only New Item*1/1/26",
+        "on_hand": 3.0,
+        "over_qty": 3.0,
+        "over_value": 36.0,
+        "qty_sold": 6.0
       }
     ],
-    "overstock_items": 2,
+    "overstock_items": 1,
+    "overstock_value": 36.0,
     "period_end": "31/01/2026",
     "period_start": "01/01/2026",
     "reorder_alerts": [
@@ -235,7 +230,7 @@
         "dept": "A1",
         "name": "Widget Beta Test Item*1/1/26",
         "on_hand": 5.0,
-        "qty_sold_90": 12.0,
+        "qty_sold": 12.0,
         "under_qty": -3.0,
         "under_value": -15.0
       },
@@ -244,18 +239,18 @@
         "dept": "A1",
         "name": "Widget Delta Fast Seller*1/1/26",
         "on_hand": 20.0,
-        "qty_sold_90": 100.0,
-        "under_qty": -2.0,
-        "under_value": -10.0
+        "qty_sold": 100.0,
+        "under_qty": -46.66,
+        "under_value": -233.3
       },
       {
         "code": "UNDER001",
         "dept": "C1",
         "name": "Under Report Only Item*1/1/26",
         "on_hand": 0.0,
-        "qty_sold_90": 8.0,
-        "under_qty": -5.33,
-        "under_value": -42.64
+        "qty_sold": 8.0,
+        "under_qty": -5.34,
+        "under_value": -42.72
       }
     ],
     "sales_items": [
@@ -263,28 +258,28 @@
         "code": "BASE002",
         "dept": "A1",
         "name": "Widget Beta Test Item*1/1/26",
-        "qty_90": 12.0,
+        "qty_sold": 12.0,
         "sales_value": 60.0
       },
       {
         "code": "BASE004",
         "dept": "A1",
         "name": "Widget Delta Fast Seller*1/1/26",
-        "qty_90": 100.0,
+        "qty_sold": 100.0,
         "sales_value": 500.0
       },
       {
         "code": "TURN001",
         "dept": "B1",
         "name": "Turn Only New Item*1/1/26",
-        "qty_90": 6.0,
+        "qty_sold": 6.0,
         "sales_value": 72.0
       },
       {
         "code": "UNDER001",
         "dept": "C1",
         "name": "Under Report Only Item*1/1/26",
-        "qty_90": 8.0,
+        "qty_sold": 8.0,
         "sales_value": 64.0
       }
     ],
@@ -295,45 +290,50 @@
         "dept": "A1",
         "name": "Widget Alpha Test Item*1/1/26",
         "on_hand": 10.0,
-        "qty_sold_90": 0.0
+        "qty_sold": 0.0,
+        "stock_value": 55.0
       },
       {
         "code": "BASE005",
         "dept": "B1",
         "name": "Widget Epsilon Slow Mover*1/1/26",
         "on_hand": 15.0,
-        "qty_sold_90": 0.0
+        "qty_sold": 0.0,
+        "stock_value": 75.0
       }
     ],
+    "slow_moving_value": 130.0,
     "stock_health": {
-      "Healthy": 1,
-      "Overstocked": 2,
-      "Slow Moving": 0,
+      "Healthy": 0,
+      "Overstocked": 1,
+      "Slow Moving": 2,
       "Understocked": 3
     },
     "top_sellers": [
       {
         "code": "BASE002",
         "name": "Widget Beta Test Item*1/1/26",
-        "qty_90": 12.0
+        "qty_sold": 12.0
       },
       {
         "code": "BASE004",
         "name": "Widget Delta Fast Seller*1/1/26",
-        "qty_90": 100.0
+        "qty_sold": 100.0
       },
       {
         "code": "TURN001",
         "name": "Turn Only New Item*1/1/26",
-        "qty_90": 6.0
+        "qty_sold": 6.0
       },
       {
         "code": "UNDER001",
         "name": "Under Report Only Item*1/1/26",
-        "qty_90": 8.0
+        "qty_sold": 8.0
       }
     ],
-    "total_sales_90": 126.0,
-    "understock_items": 3
+    "total_sales": 126.0,
+    "total_sales_value": 696.0,
+    "understock_items": 3,
+    "understock_value": 291.02
   }
 }

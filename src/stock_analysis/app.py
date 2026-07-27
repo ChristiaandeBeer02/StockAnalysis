@@ -227,6 +227,18 @@ QTableView::item:hover {
     background-color: #eff6ff;
     color: #374151;
 }
+QTableView#dataTableCompact::item {
+    padding: 3px 6px;
+}
+QTableView#dataTableCompact QHeaderView::section {
+    padding: 4px 6px;
+}
+#tableFooter {
+    font-size: 12px;
+    font-weight: 600;
+    color: #252423;
+    padding: 2px 4px 0 4px;
+}
 QHeaderView::section {
     background-color: #f1f5f9;
     color: #475569;

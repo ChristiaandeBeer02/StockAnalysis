@@ -4,19 +4,33 @@ from __future__ import annotations
 
 from PySide6.QtCore import QAbstractTableModel, QModelIndex, Qt
 
-from stock_analysis.analytics.inventory_queries import INVENTORY_HEADERS, fetch_inventory_rows
+from stock_analysis.analytics.inventory_queries import fetch_inventory_rows, inventory_headers
+from stock_analysis.analytics.lookback import DEFAULT_LOOKBACK, get_lookback_days
 from stock_analysis.db.session import get_session, has_enrichment
 
 
 class InventoryTableModel(QAbstractTableModel):
     def __init__(self, parent=None):
         super().__init__(parent)
-        self._headers = INVENTORY_HEADERS
+        self._lookback_days = DEFAULT_LOOKBACK
+        self._headers = inventory_headers(self._lookback_days)
         self._rows: list[list[str]] = []
         self._search = ""
         self._status = "Active"
         self._dept: str | None = None
+        self._batch_id: int | None = None
         self._has_enrichment = False
+        self._nickname_map: dict[str, str] = {}
+
+    def set_nickname_map(self, nickname_map: dict[str, str]) -> None:
+        self._nickname_map = nickname_map
+
+    def set_batch_id(self, batch_id: int | None) -> None:
+        self._batch_id = batch_id
+
+    def set_lookback_days(self, lookback_days: int) -> None:
+        self._lookback_days = lookback_days
+        self._headers = inventory_headers(lookback_days)
 
     def rowCount(self, parent=QModelIndex()) -> int:
         if parent.isValid():
@@ -85,13 +99,18 @@ class InventoryTableModel(QAbstractTableModel):
     def reload(self) -> None:
         with get_session() as session:
             self._has_enrichment = has_enrichment(session)
+            lookback_days = self._lookback_days or get_lookback_days(session)
             rows = fetch_inventory_rows(
                 session,
                 search=self._search,
                 status=self._status,
                 has_enrichment=self._has_enrichment,
                 dept=self._dept,
+                nickname_map=self._nickname_map,
+                batch_id=self._batch_id,
+                lookback_days=lookback_days,
             )
         self.beginResetModel()
+        self._headers = inventory_headers(lookback_days)
         self._rows = rows
         self.endResetModel()

@@ -30,7 +30,13 @@ from stock_analysis.analytics.dashboard import (
     build_item_summary,
     list_period_batches,
 )
-from stock_analysis.baseline.manager import remove_deprecated_items
+from stock_analysis.analytics.department_names import display_dept, load_nickname_map
+from stock_analysis.analytics.lookback import (
+    get_lookback_days,
+    lookback_label,
+    qty_column_label,
+    sales_period_label,
+)
 from stock_analysis.db.models import Item
 from stock_analysis.db.session import get_session, has_enrichment, has_initial_baseline
 from stock_analysis.ui.export_dialog import prompt_export_excel
@@ -48,6 +54,11 @@ from stock_analysis.ui.widgets.data_table import DataTable
 from stock_analysis.ui.widgets.empty_state import EmptyState
 from stock_analysis.ui.widgets.kpi_card import KpiCard
 from stock_analysis.ui.widgets.report_header import ReportHeader
+from stock_analysis.ui.widgets.sales_period_combo import (
+    create_sales_period_combo,
+    sync_sales_period_combo,
+    update_lookback_tooltip,
+)
 
 STATUS_OPTIONS = ["Active", "No turn data", "Deprecated", "All"]
 
@@ -100,11 +111,16 @@ class ItemDetailPage(QWidget):
         self._period_combo.currentIndexChanged.connect(self._on_period_changed)
         self._header.add_control(QLabel("Period:"))
         self._header.add_control(self._period_combo)
+        self._detail_lookback = create_sales_period_combo(
+            self, on_changed=self._on_detail_lookback_changed
+        )
+        self._header.add_control(QLabel("Sales period:"))
+        self._header.add_control(self._detail_lookback)
         layout.addWidget(self._header, 0, 0, 1, 6)
 
         self._kpi_on_hand = KpiCard("On Hand")
         self._kpi_value = KpiCard("Stock Value")
-        self._kpi_sales = KpiCard("Sales (90d)")
+        self._kpi_sales = KpiCard("Sales")
         self._kpi_over = KpiCard("Over Qty (3mo)")
         self._kpi_under = KpiCard("Under Qty (3mo)")
         self._kpi_abc = KpiCard("ABC Class")
@@ -178,6 +194,13 @@ class ItemDetailPage(QWidget):
         layout.setRowStretch(3, 1)
 
         self._batch_ids: list[int] = []
+        self._nickname_map: dict[str, str] = {}
+        self._lookback_days = 90
+
+    def _on_detail_lookback_changed(self) -> None:
+        self._lookback_days = self._detail_lookback.currentData() or 90
+        self._kpi_sales.set_title(sales_period_label(self._lookback_days))
+        self._reload_item()
 
     def _on_period_changed(self, index: int) -> None:
         if self._item_id is None or index < 0 or index >= len(self._batch_ids):
@@ -254,13 +277,25 @@ class ItemDetailPage(QWidget):
         if self._item_id is None:
             return
         with get_session() as session:
-            data = build_item_summary(session, self._item_id, self._batch_id)
+            self._nickname_map = load_nickname_map(session)
+            self._lookback_days = get_lookback_days(session)
+            sync_sales_period_combo(self._detail_lookback)
+            data = build_item_summary(
+                session,
+                self._item_id,
+                self._batch_id,
+                self._nickname_map,
+                self._lookback_days,
+            )
         if not data:
             return
         self._apply_summary(data)
 
     def show_item(self, sku: str) -> None:
         with get_session() as session:
+            self._nickname_map = load_nickname_map(session)
+            self._lookback_days = get_lookback_days(session)
+            sync_sales_period_combo(self._detail_lookback)
             item = session.scalar(select(Item).where(Item.sku == sku))
             if not item:
                 self._header.set_subtitle("Item not found")
@@ -268,7 +303,9 @@ class ItemDetailPage(QWidget):
                 return
             self._item_id = item.id
             self._sku = sku
-            data = build_item_summary(session, item.id, None)
+            data = build_item_summary(
+                session, item.id, None, self._nickname_map, self._lookback_days
+            )
 
         if not data:
             self._header.set_subtitle("Item not found")
@@ -290,7 +327,8 @@ class ItemDetailPage(QWidget):
     def _apply_summary(self, data: dict) -> None:
         self._kpi_on_hand.set_value(f"{data['on_hand']:g}")
         self._kpi_value.set_value(f"R {data['stock_value']:,.2f}")
-        self._kpi_sales.set_value(f"{data['qty_sold_90']:g}" if data.get("chart_data") else "—")
+        self._kpi_sales.set_title(sales_period_label(self._lookback_days))
+        self._kpi_sales.set_value(f"{data['qty_sold']:g}" if data.get("chart_data") else "—")
         self._kpi_over.set_value(f"{data['over_qty']:g}" if data.get("chart_data") else "—")
         self._kpi_under.set_value(f"{data['under_qty']:.2f}" if data.get("chart_data") else "—")
         abc = data.get("abc_class") or "—"
@@ -348,6 +386,8 @@ class InventoryPage(QWidget):
         self._selected_batch_id: int | None = None
         self._batch_ids: list[int] = []
         self._dept_filter: str | None = None
+        self._nickname_map: dict[str, str] = {}
+        self._lookback_days = 90
 
         outer = QVBoxLayout(self)
         self._stack = QStackedWidget()
@@ -381,6 +421,11 @@ class InventoryPage(QWidget):
         self._list_period.currentIndexChanged.connect(self._on_list_period_changed)
         self._list_header.add_control(QLabel("Period:"))
         self._list_header.add_control(self._list_period)
+        self._list_lookback = create_sales_period_combo(
+            self, on_changed=self._on_list_lookback_changed
+        )
+        self._list_header.add_control(QLabel("Sales period:"))
+        self._list_header.add_control(self._list_lookback)
         content.addWidget(self._list_header)
 
         self._tabs = QTabWidget()
@@ -492,6 +537,12 @@ class InventoryPage(QWidget):
         header.resizeSection(6, 100)
         self._table.setTextElideMode(Qt.TextElideMode.ElideRight)
 
+    def _on_list_lookback_changed(self) -> None:
+        self._lookback_days = self._list_lookback.currentData() or 90
+        sync_sales_period_combo(self._list_lookback)
+        self._inventory_model.set_lookback_days(self._lookback_days)
+        self._refresh_summary()
+
     def _on_list_period_changed(self, index: int) -> None:
         if 0 <= index < len(self._batch_ids):
             self._selected_batch_id = self._batch_ids[index]
@@ -555,7 +606,7 @@ class InventoryPage(QWidget):
         self._dept_filter_combo.clear()
         self._dept_filter_combo.addItem("All departments", None)
         for dept in sorted(departments):
-            self._dept_filter_combo.addItem(dept, dept)
+            self._dept_filter_combo.addItem(display_dept(dept, self._nickname_map), dept)
         if current:
             index = self._dept_filter_combo.findData(current)
             if index >= 0:
@@ -585,6 +636,9 @@ class InventoryPage(QWidget):
     def _refresh_summary(self) -> None:
         with get_session() as session:
             enriched = has_enrichment(session)
+            self._nickname_map = load_nickname_map(session)
+            self._lookback_days = get_lookback_days(session)
+            sync_sales_period_combo(self._list_lookback)
             summary = build_inventory_list_summary(
                 session,
                 search=self._search.text(),
@@ -592,9 +646,15 @@ class InventoryPage(QWidget):
                 batch_id=self._selected_batch_id,
                 has_enrichment=enriched,
                 dept=self._dept_filter,
+                lookback_days=self._lookback_days,
             )
             if enriched and self._selected_batch_id:
-                period = get_period_summary_cached(session, self._selected_batch_id)
+                period = get_period_summary_cached(
+                    session, self._selected_batch_id, self._lookback_days
+                )
+                update_lookback_tooltip(
+                    self._list_lookback, period.get("lookback_60_source")
+                )
                 if period.get("period_start"):
                     self._list_header.set_subtitle(
                         f"{period['period_start']} – {period['period_end']}"
@@ -603,11 +663,13 @@ class InventoryPage(QWidget):
         self._inv_kpi_count.set_value(f"{summary['item_count']:,}")
         self._inv_kpi_value.set_value(f"R {summary['total_value']:,.2f}")
         if enriched:
-            self._inv_kpi_under.set_value(f"{summary['understock_count']:,}")
-            self._inv_kpi_over.set_value(f"{summary['overstock_count']:,}")
-            self._inv_kpi_slow.set_value(f"{summary['slow_moving_count']:,}")
-            dept_view, _ = build_dept_values_chart(summary.get("dept_values", {}))
-            self._inv_dept_chart.set_chart_view(dept_view)
+            self._inv_kpi_under.set_value(f"R {summary['understock_value']:,.2f}")
+            self._inv_kpi_over.set_value(f"R {summary['overstock_value']:,.2f}")
+            self._inv_kpi_slow.set_value(f"R {summary['slow_moving_value']:,.2f}")
+            dept_view, dept_labels = build_dept_values_chart(
+                summary.get("dept_values", {}), self._nickname_map
+            )
+            self._inv_dept_chart.set_chart_view(dept_view, dept_labels)
             health = summary.get("stock_health", {})
             self._inv_health_chart.set_chart_view(build_stock_health_chart(health))
         else:
@@ -686,6 +748,7 @@ class InventoryPage(QWidget):
                 return
             enriched = has_enrichment(session)
             batches = list_period_batches(session) if enriched else []
+            self._nickname_map = load_nickname_map(session)
 
         self._empty.hide()
         self._scroll.show()
@@ -694,13 +757,20 @@ class InventoryPage(QWidget):
         if enriched:
             self._populate_list_period_combo(batches)
             self._list_period.setVisible(True)
+            self._list_lookback.setVisible(True)
+            self._detail._detail_lookback.setVisible(True)
             self._inv_dept_chart.setVisible(True)
             self._inv_health_chart.setVisible(True)
         else:
             self._list_period.setVisible(False)
+            self._list_lookback.setVisible(False)
+            self._detail._detail_lookback.setVisible(False)
             self._inv_dept_chart.setVisible(False)
             self._inv_health_chart.setVisible(False)
 
+        self._inventory_model.set_nickname_map(self._nickname_map)
+        self._inventory_model.set_batch_id(self._selected_batch_id)
+        self._inventory_model.set_lookback_days(self._lookback_days)
         self._inventory_model.reload()
         self._update_table_subtitle()
         self._refresh_summary()

@@ -14,7 +14,9 @@ from PySide6.QtWidgets import (
 )
 
 from stock_analysis.analytics.dashboard import list_period_batches
-from stock_analysis.analytics.pivot import ROW_FIELDS, VALUE_FIELDS, build_pivot
+from stock_analysis.analytics.department_names import display_dept, load_nickname_map
+from stock_analysis.analytics.lookback import get_lookback_days, qty_column_label
+from stock_analysis.analytics.pivot import ROW_FIELDS, build_pivot, value_fields_for_lookback
 from stock_analysis.analytics.reports import abc_report, abc_summary, report_period_label, slow_moving_report
 from stock_analysis.db.session import get_session, has_enrichment, has_initial_baseline
 from stock_analysis.ui.export_dialog import prompt_export_excel, prompt_export_pdf
@@ -22,6 +24,11 @@ from stock_analysis.ui.widgets.chart_builders import build_abc_chart, build_pie_
 from stock_analysis.ui.widgets.chart_tile import ChartTile
 from stock_analysis.ui.widgets.data_table import DataTable
 from stock_analysis.ui.widgets.empty_state import EmptyState
+from stock_analysis.ui.widgets.sales_period_combo import (
+    create_sales_period_combo,
+    sync_sales_period_combo,
+    update_lookback_tooltip,
+)
 
 
 class ReportsPage(QWidget):
@@ -57,6 +64,11 @@ class ReportsPage(QWidget):
         self._period_combo.setMinimumWidth(280)
         self._period_combo.currentIndexChanged.connect(self._reload_active_tab)
         period_row.addWidget(self._period_combo)
+        self._lookback_combo = create_sales_period_combo(
+            self, on_changed=self._reload_active_tab
+        )
+        period_row.addWidget(QLabel("Sales period:"))
+        period_row.addWidget(self._lookback_combo)
         period_row.addStretch()
         content_layout.addLayout(period_row)
 
@@ -67,7 +79,7 @@ class ReportsPage(QWidget):
         )
         self._abc_table = DataTable()
         self._abc_table.set_headers(
-            ["SKU", "Name", "Dept", "Qty 90d", "Sales Value", "ABC", "Cumulative %"]
+            ["SKU", "Name", "Dept", "Qty", "Sales Value", "ABC", "Cumulative %"]
         )
         self._abc_chart = ChartTile("ABC Classification")
         self._pivot_table = DataTable()
@@ -105,7 +117,8 @@ class ReportsPage(QWidget):
         self._pivot_row = QComboBox()
         self._pivot_row.addItems(list(ROW_FIELDS.keys()))
         self._pivot_value = QComboBox()
-        self._pivot_value.addItems(list(VALUE_FIELDS.keys()))
+        self._lookback_days = 90
+        self._refresh_pivot_value_options()
         pivot_generate = QPushButton("Generate")
         pivot_generate.clicked.connect(self._load_pivot)
         pivot_export_xlsx = QPushButton("Export Excel…")
@@ -134,6 +147,7 @@ class ReportsPage(QWidget):
         self._pivot_headers: list[str] = []
         self._pivot_rows: list[list] = []
         self._batch_ids: list[int | None] = []
+        self._nickname_map: dict[str, str] = {}
 
     def _configure_slow_table_columns(self) -> None:
         header = self._slow_table.horizontalHeader()
@@ -164,7 +178,36 @@ class ReportsPage(QWidget):
             return None
         return self._batch_ids[index]
 
+    def _refresh_pivot_value_options(self) -> None:
+        current = self._pivot_value.currentText()
+        fields = value_fields_for_lookback(self._lookback_days)
+        self._pivot_value.blockSignals(True)
+        self._pivot_value.clear()
+        self._pivot_value.addItems(list(fields.keys()))
+        index = self._pivot_value.findText(current)
+        if index >= 0:
+            self._pivot_value.setCurrentIndex(index)
+        self._pivot_value.blockSignals(False)
+
+    def _current_lookback_days(self) -> int:
+        with get_session() as session:
+            return get_lookback_days(session)
+
     def _reload_active_tab(self) -> None:
+        self._lookback_days = self._current_lookback_days()
+        sync_sales_period_combo(self._lookback_combo)
+        self._refresh_pivot_value_options()
+        self._abc_table.set_headers(
+            [
+                "SKU",
+                "Name",
+                "Dept",
+                qty_column_label(self._lookback_days),
+                "Sales Value",
+                "ABC",
+                "Cumulative %",
+            ]
+        )
         tab = self._tabs.currentIndex()
         if tab == 0:
             self._load_slow_moving()
@@ -175,12 +218,21 @@ class ReportsPage(QWidget):
 
     def _load_slow_moving(self) -> None:
         with get_session() as session:
-            report = slow_moving_report(session, self._selected_batch_id())
+            self._nickname_map = load_nickname_map(session)
+            lookback_days = get_lookback_days(session)
+            report = slow_moving_report(session, self._selected_batch_id(), lookback_days)
+            if self._selected_batch_id():
+                from stock_analysis.analytics.cache import get_period_summary_cached
+
+                period = get_period_summary_cached(
+                    session, self._selected_batch_id(), lookback_days
+                )
+                update_lookback_tooltip(self._lookback_combo, period.get("lookback_60_source"))
         self._slow_rows = [
             [
                 row["sku"],
                 row["name"],
-                row["dept"],
+                display_dept(row["dept"], self._nickname_map),
                 f"{row['on_hand']:g}",
                 f"R {row['unit_cost']:,.2f}",
                 f"R {row['stock_value']:,.2f}",
@@ -192,14 +244,28 @@ class ReportsPage(QWidget):
 
     def _load_abc(self) -> None:
         with get_session() as session:
-            report = abc_report(session, self._selected_batch_id())
-            summary = abc_summary(session, self._selected_batch_id(), report=report)
+            self._nickname_map = load_nickname_map(session)
+            lookback_days = get_lookback_days(session)
+            report = abc_report(session, self._selected_batch_id(), lookback_days)
+            summary = abc_summary(
+                session,
+                self._selected_batch_id(),
+                report=report,
+                lookback_days=lookback_days,
+            )
+            if self._selected_batch_id():
+                from stock_analysis.analytics.cache import get_period_summary_cached
+
+                period = get_period_summary_cached(
+                    session, self._selected_batch_id(), lookback_days
+                )
+                update_lookback_tooltip(self._lookback_combo, period.get("lookback_60_source"))
         self._abc_rows = [
             [
                 row["sku"],
                 row["name"],
-                row["dept"],
-                f"{row['qty_sold_90']:g}",
+                display_dept(row["dept"], self._nickname_map),
+                f"{row['qty_sold']:g}",
                 f"R {row['sales_value']:,.2f}",
                 row["abc_class"],
                 f"{row['cumulative_pct']:.1f}%",
@@ -215,11 +281,15 @@ class ReportsPage(QWidget):
 
     def _load_pivot(self) -> None:
         with get_session() as session:
+            self._nickname_map = load_nickname_map(session)
+            lookback_days = get_lookback_days(session)
             headers, rows = build_pivot(
                 session,
                 self._pivot_row.currentText(),
                 self._pivot_value.currentText(),
                 self._selected_batch_id(),
+                self._nickname_map,
+                lookback_days,
             )
         self._pivot_headers = headers
         self._pivot_rows = rows
@@ -239,7 +309,15 @@ class ReportsPage(QWidget):
             prompt_export_pdf(self, title, headers, self._slow_rows, "slow_moving.pdf")
 
     def _export_abc(self, fmt: str) -> None:
-        headers = ["SKU", "Name", "Dept", "Qty 90d", "Sales Value", "ABC", "Cumulative %"]
+        headers = [
+            "SKU",
+            "Name",
+            "Dept",
+            qty_column_label(self._lookback_days),
+            "Sales Value",
+            "ABC",
+            "Cumulative %",
+        ]
         with get_session() as session:
             title = f"ABC Report — {report_period_label(session, self._selected_batch_id())}"
         if fmt == "excel":
@@ -283,6 +361,9 @@ class ReportsPage(QWidget):
         if batches:
             self._period_combo.setCurrentIndex(selected_index)
         self._period_combo.blockSignals(False)
+        sync_sales_period_combo(self._lookback_combo)
+        self._lookback_days = self._current_lookback_days()
+        self._refresh_pivot_value_options()
 
         if self._tabs.currentIndex() >= 0:
             self._reload_active_tab()

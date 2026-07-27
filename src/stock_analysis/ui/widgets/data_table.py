@@ -37,6 +37,11 @@ class DataTable(QTableView):
         self.setVerticalScrollMode(QAbstractItemView.ScrollMode.ScrollPerPixel)
         self.setMinimumHeight(0)
 
+    def enable_compact_rows(self) -> None:
+        """Use tighter row/header sizing for dense dashboard tables."""
+        self.setObjectName("dataTableCompact")
+        self.verticalHeader().setDefaultSectionSize(22)
+
     def _apply_palette(self) -> None:
         palette = self.palette()
         palette.setColor(QPalette.ColorRole.Base, QColor("#ffffff"))

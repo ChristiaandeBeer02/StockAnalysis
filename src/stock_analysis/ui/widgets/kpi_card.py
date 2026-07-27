@@ -38,6 +38,9 @@ class KpiCard(QFrame):
     def set_value(self, value: str) -> None:
         self._value.setText(value)
 
+    def set_title(self, title: str) -> None:
+        self._title.setText(title)
+
     def set_delta(self, text: str, direction: str = "neutral") -> None:
         if not text or text == "—":
             self._delta.hide()
