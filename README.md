@@ -50,7 +50,7 @@ When importing movement data, confirm the **from/to dates** match the period cov
 
 Items that appear only in sthold2 are kept in inventory but marked **No movement data** and are excluded from movement-based dashboard KPIs. That is expected.
 
-**Backdate import (Settings):** Rolls baseline backward by reversing movement for a selected period. Imports are blocked if any SKU would go below zero.
+**Backdate import (Settings):** Adds historical sales and purchase data for a past period without changing your current on-hand quantities or baseline date. Use this to extend sales lookback when viewing older periods.
 
 ## Phase 1
 

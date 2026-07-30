@@ -40,14 +40,20 @@ def baseline_anchor_date(parsed: StockholdingParseResult) -> date | None:
     return None
 
 
-def catch_up_period(anchor: date, closing_weekday: int) -> tuple[date, date] | None:
-    """Day after anchor through the next closing day (inclusive). None if already on closing day."""
+def previous_closing_date(anchor: date, closing_weekday: int) -> date | None:
+    """Most recent closing day on or before ``anchor``. None if ``anchor`` is already on closing day."""
     if anchor.weekday() == closing_weekday:
         return None
-    start = anchor + timedelta(days=1)
-    days_to_closing = (closing_weekday - start.weekday()) % 7
-    end = start + timedelta(days=days_to_closing)
-    return start, end
+    days_since_closing = (anchor.weekday() - closing_weekday) % 7
+    return anchor - timedelta(days=days_since_closing)
+
+
+def backdate_alignment_period(anchor: date, closing_weekday: int) -> tuple[date, date] | None:
+    """Day after previous closing through ``anchor`` (inclusive). None if already on closing day."""
+    previous_close = previous_closing_date(anchor, closing_weekday)
+    if previous_close is None:
+        return None
+    return previous_close + timedelta(days=1), anchor
 
 
 def next_regular_period(after: date, closing_weekday: int) -> tuple[date, date]:
@@ -63,26 +69,30 @@ def next_regular_period(after: date, closing_weekday: int) -> tuple[date, date]:
 def suggest_next_movement_period(
     anchor: date | None,
     closing_weekday: int | None,
-    last_period_end: date | None,
 ) -> tuple[date, date] | None:
-    """Suggest the next movement import range based on baseline and import history."""
+    """Suggest the next movement import range from the stored baseline-as-of date."""
     if closing_weekday is None or anchor is None:
         return None
 
-    if last_period_end is None:
-        catch_up = catch_up_period(anchor, closing_weekday)
-        if catch_up is not None:
-            return catch_up
-        return next_regular_period(anchor, closing_weekday)
-
-    return next_regular_period(last_period_end, closing_weekday)
+    alignment = backdate_alignment_period(anchor, closing_weekday)
+    if alignment is not None:
+        return alignment
+    return next_regular_period(anchor, closing_weekday)
 
 
 def is_catch_up_pending(
     anchor: date | None,
     closing_weekday: int | None,
-    last_period_end: date | None,
 ) -> bool:
-    if anchor is None or closing_weekday is None or last_period_end is not None:
+    if anchor is None or closing_weekday is None:
         return False
-    return catch_up_period(anchor, closing_weekday) is not None
+    return backdate_alignment_period(anchor, closing_weekday) is not None
+
+
+def format_baseline_as_of_label(anchor: date | None, closing_weekday: int | None) -> str:
+    if anchor is None:
+        return "Not set"
+    label = f"{weekday_name(anchor.weekday())} {format_report_date(anchor)}"
+    if closing_weekday is not None and is_catch_up_pending(anchor, closing_weekday):
+        label += " (not aligned)"
+    return label

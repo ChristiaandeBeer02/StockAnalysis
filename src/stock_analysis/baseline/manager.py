@@ -1,4 +1,10 @@
-"""Baseline state management."""
+"""Baseline state management.
+
+The stored baseline-as-of date (``baseline_anchor_date``) moves only when on-hand
+quantities are rolled forward or backward in time: initial import, baseline
+alignment, and forward period imports. Historical backdate imports and stock
+takes do not change it.
+"""
 
 from __future__ import annotations
 
@@ -29,9 +35,11 @@ from stock_analysis.db.models import (
     StockTakeLine,
     StockTakeSession,
 )
-from stock_analysis.analytics.movement_periods import baseline_anchor_date
+from stock_analysis.analytics.movement_periods import baseline_anchor_date, previous_closing_date
 from stock_analysis.db.session import (
+    get_baseline_anchor_date,
     get_latest_baseline_version,
+    get_movement_closing_weekday,
     has_initial_baseline,
     set_app_state,
     set_baseline_anchor_date,
@@ -309,6 +317,7 @@ def apply_movement_import(
     period_start: str,
     period_end: str,
     direction: Literal["forward", "backward"] = "forward",
+    update_baseline: bool = True,
 ) -> MovementImportSummary:
     parsed = merge_movement_reports(sales_path, purchases_path)
     merged = parsed.rows
@@ -351,7 +360,7 @@ def apply_movement_import(
     sku_map = {item.sku: item for item in session.scalars(select(Item))}
     baseline_map = {row.item_id: row for row in session.scalars(select(BaselineItem))}
 
-    if direction == "backward":
+    if update_baseline and direction == "backward":
         negative_skus: list[str] = []
         for row in merged:
             if should_skip_item(row.code, row.description):
@@ -384,6 +393,7 @@ def apply_movement_import(
         baseline = baseline_map.get(item.id)
         opening = baseline.qty_on_hand if baseline is not None else 0.0
         new_qty = _compute_new_qty(opening, row, direction=direction)
+        line_on_hand = opening if not update_baseline else new_qty
         avg_monthly_sales = row.net_sales_qty / (period_days / 30.0) if period_days > 0 else 0.0
 
         _store_movement_line(
@@ -391,58 +401,64 @@ def apply_movement_import(
             batch.id,
             item.id,
             row,
-            on_hand=new_qty,
+            on_hand=line_on_hand,
             avg_monthly_sales=avg_monthly_sales,
         )
 
-        if baseline is None:
-            baseline = BaselineItem(
-                item_id=item.id,
-                qty_on_hand=new_qty,
-                baseline_version_id=version.id,
-                last_update_source=source_type,
-            )
-            session.add(baseline)
-            baseline_map[item.id] = baseline
-            log_change(
-                session,
-                item_id=item.id,
-                baseline_version_id=version.id,
-                field_changed="qty_on_hand",
-                old_value=None,
-                new_value=str(new_qty),
-                change_reason=source_type,
-                source_type=source_type,
-                source_import_id=batch.id,
-            )
-            qty_changes += 1
-        elif baseline.qty_on_hand != new_qty:
-            log_change(
-                session,
-                item_id=item.id,
-                baseline_version_id=version.id,
-                field_changed="qty_on_hand",
-                old_value=str(baseline.qty_on_hand),
-                new_value=str(new_qty),
-                change_reason=source_type,
-                source_type=source_type,
-                source_import_id=batch.id,
-            )
-            baseline.qty_on_hand = new_qty
-            baseline.baseline_version_id = version.id
-            baseline.last_update_source = source_type
-            qty_changes += 1
-        else:
-            baseline.baseline_version_id = version.id
-            baseline.last_update_source = source_type
+        if update_baseline:
+            if baseline is None:
+                baseline = BaselineItem(
+                    item_id=item.id,
+                    qty_on_hand=new_qty,
+                    baseline_version_id=version.id,
+                    last_update_source=source_type,
+                )
+                session.add(baseline)
+                baseline_map[item.id] = baseline
+                log_change(
+                    session,
+                    item_id=item.id,
+                    baseline_version_id=version.id,
+                    field_changed="qty_on_hand",
+                    old_value=None,
+                    new_value=str(new_qty),
+                    change_reason=source_type,
+                    source_type=source_type,
+                    source_import_id=batch.id,
+                )
+                qty_changes += 1
+            elif baseline.qty_on_hand != new_qty:
+                log_change(
+                    session,
+                    item_id=item.id,
+                    baseline_version_id=version.id,
+                    field_changed="qty_on_hand",
+                    old_value=str(baseline.qty_on_hand),
+                    new_value=str(new_qty),
+                    change_reason=source_type,
+                    source_type=source_type,
+                    source_import_id=batch.id,
+                )
+                baseline.qty_on_hand = new_qty
+                baseline.baseline_version_id = version.id
+                baseline.last_update_source = source_type
+                qty_changes += 1
+            else:
+                baseline.baseline_version_id = version.id
+                baseline.last_update_source = source_type
 
         if (index + 1) % 500 == 0:
             session.flush()
 
-    if movement_codes and direction == "forward":
+    if movement_codes and direction == "forward" and update_baseline:
         session.execute(
             update(Item).where(Item.sku.notin_(movement_codes)).values(not_in_turn_report=True)
         )
+
+    if update_baseline and direction == "forward":
+        end = parse_report_date(period_end)
+        if end is not None:
+            set_baseline_anchor_date(session, end)
 
     if import_type == "baseline_enrichment":
         set_app_state(session, "enrichment_complete", "true")
@@ -502,6 +518,35 @@ def apply_period_import(
     )
 
 
+def apply_baseline_alignment(
+    session: Session,
+    sales_path: Path,
+    purchases_path: Path,
+    *,
+    period_start: str,
+    period_end: str,
+) -> MovementImportSummary:
+    anchor = get_baseline_anchor_date(session)
+    closing_weekday = get_movement_closing_weekday(session)
+    if anchor is None or closing_weekday is None:
+        raise ValueError("Baseline anchor and movement closing day must be set before alignment.")
+    aligned_anchor = previous_closing_date(anchor, closing_weekday)
+    if aligned_anchor is None:
+        raise ValueError("Baseline is already aligned to the movement closing day.")
+
+    result = apply_movement_import(
+        session,
+        sales_path,
+        purchases_path,
+        import_type="baseline_enrichment",
+        period_start=period_start,
+        period_end=period_end,
+        direction="backward",
+    )
+    set_baseline_anchor_date(session, aligned_anchor)
+    return result
+
+
 def apply_backdate_import(
     session: Session,
     sales_path: Path,
@@ -518,6 +563,7 @@ def apply_backdate_import(
         period_start=period_start,
         period_end=period_end,
         direction="backward",
+        update_baseline=False,
     )
 
 

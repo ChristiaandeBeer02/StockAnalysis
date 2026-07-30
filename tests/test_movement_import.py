@@ -2,21 +2,25 @@
 
 from __future__ import annotations
 
+from datetime import date
 from pathlib import Path
 
 import pytest
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session, sessionmaker
 
+from stock_analysis.analytics.movement_periods import suggest_next_movement_period
 from stock_analysis.baseline.manager import (
     BackdateValidationError,
     apply_backdate_import,
+    apply_baseline_alignment,
     apply_enrichment,
     apply_initial_baseline,
     apply_period_import,
 )
 from stock_analysis.analytics.inventory_queries import fetch_inventory_rows
 from stock_analysis.db.models import Base, BaselineItem, Item, PeriodTurnLine
+from stock_analysis.db.session import get_baseline_anchor_date, has_enrichment, set_movement_closing_weekday
 from tests.helpers.import_snapshot import (
     MOVEMENT_PERIOD_END,
     MOVEMENT_PERIOD_START,
@@ -111,6 +115,8 @@ def test_backdate_movement_delta(session: Session, fixtures: Path) -> None:
     )
     session.commit()
 
+    anchor_before = get_baseline_anchor_date(session)
+
     apply_backdate_import(
         session,
         fixtures / "Sales_Detail_sample.csv",
@@ -120,23 +126,87 @@ def test_backdate_movement_delta(session: Session, fixtures: Path) -> None:
     )
     session.commit()
 
-    assert _baseline_qty(session, "BASE001") == pytest.approx(10.0)
-    assert _baseline_qty(session, "BASE002") == pytest.approx(5.0)
-    assert _baseline_qty(session, "BASE004") == pytest.approx(20.0)
+    assert _baseline_qty(session, "BASE001") == pytest.approx(8.0)
+    assert _baseline_qty(session, "BASE002") == pytest.approx(3.0)
+    assert _baseline_qty(session, "BASE004") == pytest.approx(10.0)
+    assert get_baseline_anchor_date(session) == anchor_before
 
 
-def test_backdate_blocks_negative_qty(session: Session, fixtures: Path) -> None:
+def test_enrichment_advances_anchor(session: Session, fixtures: Path) -> None:
     apply_initial_baseline(session, fixtures / "sthold2.csv")
+    apply_enrichment(
+        session,
+        fixtures / "Sales_Detail_sample.csv",
+        fixtures / "PurchasesDetailed_sample.csv",
+        period_start=MOVEMENT_PERIOD_START,
+        period_end=MOVEMENT_PERIOD_END,
+    )
+    session.commit()
+
+    assert get_baseline_anchor_date(session) == date(2026, 1, 31)
+
+
+def test_baseline_alignment_backdates_and_completes_step2(session: Session, fixtures: Path) -> None:
+    apply_initial_baseline(session, fixtures / "sthold2.csv")
+    set_movement_closing_weekday(session, 5)  # Saturday; anchor 01/01/2026 is Thursday
+    session.commit()
+
+    assert not has_enrichment(session)
+
+    sales_path, purchases_path = _write_alignment_csvs(fixtures)
+    apply_baseline_alignment(
+        session,
+        sales_path,
+        purchases_path,
+        period_start="28/12/2025",
+        period_end="01/01/2026",
+    )
+    session.commit()
+
+    assert has_enrichment(session)
+    assert get_baseline_anchor_date(session) == date(2025, 12, 27)
+    assert _baseline_qty(session, "BASE001") == pytest.approx(12.0)
+
+
+def test_baseline_alignment_blocks_negative_qty(session: Session, fixtures: Path) -> None:
+    apply_initial_baseline(session, fixtures / "sthold2.csv")
+    set_movement_closing_weekday(session, 5)
     session.commit()
 
     with pytest.raises(BackdateValidationError):
-        apply_backdate_import(
+        apply_baseline_alignment(
             session,
             fixtures / "Sales_Detail_sample.csv",
             fixtures / "PurchasesDetailed_sample.csv",
             period_start=MOVEMENT_PERIOD_START,
             period_end=MOVEMENT_PERIOD_END,
         )
+
+
+def test_backdate_import_does_not_change_suggested_alignment_period(
+    session: Session, fixtures: Path
+) -> None:
+    apply_initial_baseline(session, fixtures / "sthold2.csv")
+    set_movement_closing_weekday(session, 5)
+    session.commit()
+
+    assert get_baseline_anchor_date(session) == date(2026, 1, 1)
+
+    apply_backdate_import(
+        session,
+        fixtures / "Sales_Detail_sample.csv",
+        fixtures / "PurchasesDetailed_sample.csv",
+        period_start="01/12/2025",
+        period_end="31/12/2025",
+    )
+    session.commit()
+
+    anchor = get_baseline_anchor_date(session)
+    assert anchor == date(2026, 1, 1)
+    assert suggest_next_movement_period(anchor, 5) == (
+        date(2025, 12, 28),
+        date(2026, 1, 1),
+    )
 
 
 def test_period_import_rolls_forward(session: Session, fixtures: Path) -> None:
@@ -160,6 +230,52 @@ def test_period_import_rolls_forward(session: Session, fixtures: Path) -> None:
     session.commit()
 
     assert _baseline_qty(session, "BASE001") == pytest.approx(6.0)
+    assert get_baseline_anchor_date(session) == date(2026, 2, 7)
+
+
+def _write_alignment_csvs(target_dir: Path) -> tuple[Path, Path]:
+    sales_header = (
+        '"CODE","DEPARTMENT","MAINITEM","Descript","AvrgCost","GenCode","PurchaseOr","OnHand",'
+        '"Regular_SU","SalesOrder","WIPQty","LBOnhand","Subdepartm","Category","Range","Cycle",'
+        '"Sales","SalesQty","SalesCost","Refunds","RefundsQty","RefundsCost","NettSales",'
+        '"NettSalesQuantity","NettCost","Profit","Purchases","Returns","VAT"'
+    )
+    purchases_header = (
+        '"Code","Department","MainItem","Sales","Units","SalesCost","Refunds","RefundsQty",'
+        '"RefundsCost","NettSales","NettCost","Profit","Purchases","RETURNS","PurchasesQT",'
+        '"RETURNSQT","NettPurchases","NettPurchases_VAT","VAT"'
+    )
+    sales_path = target_dir / "Sales_Detail_alignment.csv"
+    purchases_path = target_dir / "PurchasesDetailed_alignment.csv"
+    sales_path.write_text(
+        "\n".join(
+            [
+                sales_header,
+                build_sales_detail_row(
+                    "BASE001",
+                    "Widget Alpha Test Item*1/1/26",
+                    subdepartm="A1",
+                    avg_cost=5.0,
+                    on_hand=10.0,
+                    sales_qty=2.0,
+                    net_sales_qty=2.0,
+                ),
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    purchases_path.write_text(
+        "\n".join(
+            [
+                purchases_header,
+                build_purchases_row("BASE001", department="A1", sales_qty=2.0, avg_cost=5.0),
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    return sales_path, purchases_path
 
 
 def _write_small_period_csvs(target_dir: Path) -> tuple[Path, Path]:

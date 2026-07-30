@@ -19,10 +19,10 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
 )
 
-from stock_analysis.analytics.lookback import list_sales_batches
 from stock_analysis.analytics.movement_periods import (
     format_report_date,
     is_catch_up_pending,
+    previous_closing_date,
     suggest_next_movement_period,
     weekday_name,
 )
@@ -31,9 +31,9 @@ from stock_analysis.db.session import (
     get_baseline_anchor_date,
     get_movement_closing_weekday,
     get_session,
+    has_enrichment,
     has_initial_baseline,
 )
-from stock_analysis.importers.iq_retail_parser import parse_report_date
 from stock_analysis.importers.movement_parser import merge_movement_reports
 from stock_analysis.ui.workers.import_worker import run_in_background
 
@@ -64,29 +64,37 @@ def _date_to_qdate(value: date) -> QDate:
     return QDate(value.year, value.month, value.day)
 
 
-def _resolve_default_period(session) -> tuple[date | None, date | None, str | None]:
+def _alignment_context(session) -> tuple[bool, date | None, date | None, str | None]:
     closing = get_movement_closing_weekday(session)
     anchor = get_baseline_anchor_date(session)
     if closing is None or anchor is None:
-        return None, None, None
+        return False, None, None, None
 
-    batches = list_sales_batches(session)
-    last_end = None
-    if batches:
-        last_end = parse_report_date(batches[0].period_end or "")
-
-    suggested = suggest_next_movement_period(anchor, closing, last_end)
+    pending = is_catch_up_pending(anchor, closing)
+    suggested = suggest_next_movement_period(anchor, closing)
     if suggested is None:
-        return None, None, None
+        return pending, None, None, None
 
     start, end = suggested
+    anchor_label = format_report_date(anchor)
     intro = None
-    if is_catch_up_pending(anchor, closing, last_end):
+    if pending:
         intro = (
-            f"Import movement for the catch-up period {format_report_date(start)} to "
-            f"{format_report_date(end)} to roll your baseline forward to your first "
+            f"Your baseline is as of {anchor_label}. "
+            f"Import movement for the alignment period {format_report_date(start)} to "
+            f"{format_report_date(end)} to backdate your baseline to your previous "
             f"weekly close ({weekday_name(closing)})."
         )
+    else:
+        intro = (
+            f"Your baseline is as of {anchor_label}. "
+            f"Import movement for the suggested period below."
+        )
+    return pending, start, end, intro
+
+
+def _resolve_default_period(session) -> tuple[date | None, date | None, str | None]:
+    _, start, end, intro = _alignment_context(session)
     return start, end, intro
 
 
@@ -279,14 +287,40 @@ class MovementImportWizard(QDialog):
             return
 
         if self._config.backdate_confirm:
+            if self._config.import_type == "period_turn_backdate":
+                backdate_message = (
+                    f"This will import historical sales and purchase data for {start} to {end}. "
+                    "Your current on-hand quantities and baseline date will not change.\n\nContinue?"
+                )
+            else:
+                end_date = _qdate_to_date(self._to_date.date())
+                with get_session() as session:
+                    closing = get_movement_closing_weekday(session)
+                aligned = (
+                    previous_closing_date(end_date, closing)
+                    if closing is not None
+                    else None
+                )
+                if aligned is not None:
+                    aligned_label = format_report_date(aligned)
+                    backdate_message = (
+                        f"Your baseline is as of {end} (your stockholding date). This will "
+                        f"reverse-apply movement from {end} back through {start}, rolling your "
+                        f"baseline back to your previous weekly close ({aligned_label}). "
+                        "Manual adjustments during that period will not be reversed.\n\n"
+                        "Continue?"
+                    )
+                else:
+                    backdate_message = (
+                        f"Your baseline is as of {end} (your stockholding date). This will "
+                        f"reverse-apply movement from {end} back through {start}, rolling your "
+                        "baseline backward in time. Manual adjustments during that period will "
+                        "not be reversed.\n\nContinue?"
+                    )
             backdate_confirm = QMessageBox.warning(
                 self,
                 "Confirm Backdate Import",
-                (
-                    f"This will reverse-apply movement for {start} to {end}, rolling your "
-                    "baseline backward in time. Manual adjustments during that period will "
-                    "not be reversed.\n\nContinue?"
-                ),
+                backdate_message,
                 QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             )
             if backdate_confirm != QMessageBox.StandardButton.Yes:
@@ -348,30 +382,78 @@ def run_enrichment_wizard(
     initial_to: date | None = None,
     intro_override: str | None = None,
 ) -> bool:
-    from stock_analysis.baseline.manager import apply_enrichment
+    with get_session() as session:
+        needs_closing_day = (
+            has_initial_baseline(session)
+            and not has_enrichment(session)
+            and get_movement_closing_weekday(session) is None
+        )
 
-    def on_import(sales_path, purchases_path, period_start, period_end):
-        with get_session() as session:
-            return apply_enrichment(
-                session,
-                sales_path,
-                purchases_path,
-                period_start=period_start,
-                period_end=period_end,
-            )
+    if needs_closing_day:
+        from stock_analysis.ui.wizards.movement_closing_dialog import run_closing_day_dialog
 
-    config = _build_config(
-        title="Import Movement Period (Step 2)",
-        intro="This applies sales and purchase movement to roll your baseline forward.",
-        confirm_label="Import Movement",
-        import_type="baseline_enrichment",
-        direction="forward",
-        require_baseline=True,
-        initial_from=initial_from,
-        initial_to=initial_to,
-        intro_override=intro_override,
-        use_closing_defaults=True,
-    )
+        if run_closing_day_dialog(parent) is None:
+            return False
+
+    with get_session() as session:
+        alignment_pending, _, _, _ = _alignment_context(session)
+
+    if alignment_pending:
+        from stock_analysis.baseline.manager import apply_baseline_alignment
+
+        def on_import(sales_path, purchases_path, period_start, period_end):
+            with get_session() as session:
+                try:
+                    return apply_baseline_alignment(
+                        session,
+                        sales_path,
+                        purchases_path,
+                        period_start=period_start,
+                        period_end=period_end,
+                    )
+                except BackdateValidationError as exc:
+                    raise RuntimeError(str(exc)) from exc
+
+        config = _build_config(
+            title="Import Movement Period (Step 2)",
+            intro=(
+                "This reverse-applies movement to align your baseline to your previous weekly close."
+            ),
+            confirm_label="Import Movement",
+            import_type="baseline_enrichment",
+            direction="backward",
+            require_baseline=True,
+            backdate_confirm=True,
+            initial_from=initial_from,
+            initial_to=initial_to,
+            intro_override=intro_override,
+            use_closing_defaults=True,
+        )
+    else:
+        from stock_analysis.baseline.manager import apply_enrichment
+
+        def on_import(sales_path, purchases_path, period_start, period_end):
+            with get_session() as session:
+                return apply_enrichment(
+                    session,
+                    sales_path,
+                    purchases_path,
+                    period_start=period_start,
+                    period_end=period_end,
+                )
+
+        config = _build_config(
+            title="Import Movement Period (Step 2)",
+            intro="This applies sales and purchase movement to roll your baseline forward.",
+            confirm_label="Import Movement",
+            import_type="baseline_enrichment",
+            direction="forward",
+            require_baseline=True,
+            initial_from=initial_from,
+            initial_to=initial_to,
+            intro_override=intro_override,
+            use_closing_defaults=True,
+        )
     return _run_wizard(parent, config, on_import)
 
 
@@ -420,7 +502,7 @@ def run_backdate_import_wizard(parent) -> bool:
         parent,
         MovementWizardConfig(
             title="Backdate Import",
-            intro="Roll your current baseline backward to estimate on-hand before the selected period.",
+            intro="Import historical sales and purchase data for a past period. Your current on-hand quantities and baseline date will not change.",
             confirm_label="Backdate Import",
             import_type="period_turn_backdate",
             direction="backward",

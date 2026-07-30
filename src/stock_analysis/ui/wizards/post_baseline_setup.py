@@ -1,12 +1,12 @@
-"""Post-baseline setup: closing day selection and optional catch-up enrichment."""
+"""Post-baseline setup: closing day selection and optional baseline alignment."""
 
 from __future__ import annotations
 
 from PySide6.QtWidgets import QMessageBox, QWidget
 
 from stock_analysis.analytics.movement_periods import (
+    backdate_alignment_period,
     baseline_anchor_date,
-    catch_up_period,
     format_report_date,
     weekday_name,
 )
@@ -17,7 +17,7 @@ from stock_analysis.ui.wizards.movement_import_wizard import run_enrichment_wiza
 
 
 def run_post_baseline_setup(parent: QWidget, parsed: StockholdingParseResult | None = None) -> bool:
-    """Ask for closing day and optionally launch catch-up enrichment. Returns True if data changed."""
+    """Ask for closing day and optionally launch baseline alignment. Returns True if data changed."""
     anchor = None
     if parsed is not None:
         anchor = baseline_anchor_date(parsed)
@@ -31,8 +31,8 @@ def run_post_baseline_setup(parent: QWidget, parsed: StockholdingParseResult | N
     if closing_weekday is None:
         return False
 
-    catch_up = catch_up_period(anchor, closing_weekday)
-    if catch_up is None:
+    alignment = backdate_alignment_period(anchor, closing_weekday)
+    if alignment is None:
         QMessageBox.information(
             parent,
             "Movement Calendar Set",
@@ -44,7 +44,7 @@ def run_post_baseline_setup(parent: QWidget, parsed: StockholdingParseResult | N
         )
         return False
 
-    start, end = catch_up
+    start, end = alignment
     start_label = format_report_date(start)
     end_label = format_report_date(end)
     return run_enrichment_wizard(
@@ -54,7 +54,7 @@ def run_post_baseline_setup(parent: QWidget, parsed: StockholdingParseResult | N
         intro_override=(
             f"Your stockholding is from {format_report_date(anchor)} "
             f"({weekday_name(anchor.weekday())}), which is not your closing day.\n\n"
-            f"Import movement for the catch-up period {start_label} to {end_label} "
-            "to roll your baseline forward to your first weekly close."
+            f"Import movement for the alignment period {start_label} to {end_label} "
+            "to backdate your baseline to your previous weekly close."
         ),
     )

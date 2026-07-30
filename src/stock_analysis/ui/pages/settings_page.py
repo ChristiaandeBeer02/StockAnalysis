@@ -17,8 +17,12 @@ from stock_analysis.analytics.cache import invalidate_summaries
 from stock_analysis.analytics.dashboard_config import get_dashboard_config, save_dashboard_config
 from stock_analysis.analytics.department_names import flush_item_departments
 from stock_analysis.config import APP_NAME, APP_VERSION, get_app_data_dir, get_database_path
-from stock_analysis.analytics.movement_periods import weekday_name
-from stock_analysis.db.session import get_movement_closing_weekday, get_session
+from stock_analysis.analytics.movement_periods import format_baseline_as_of_label, weekday_name
+from stock_analysis.db.session import (
+    get_baseline_anchor_date,
+    get_movement_closing_weekday,
+    get_session,
+)
 from stock_analysis.ui.pages.department_naming_page import DepartmentNamingPage
 from stock_analysis.ui.wizards.initial_baseline_wizard import InitialBaselineWizard
 
@@ -82,12 +86,16 @@ class SettingsPage(QWidget):
         layout.addWidget(self._flush_dept_btn)
 
         movement_group = QGroupBox("Movement Calendar")
-        movement_layout = QHBoxLayout(movement_group)
+        movement_form = QFormLayout(movement_group)
+        self._baseline_as_of_label = QLabel("—")
         self._closing_day_label = QLabel("—")
         self._change_closing_btn = QPushButton("Change…")
         self._change_closing_btn.clicked.connect(self._change_closing_day)
-        movement_layout.addWidget(self._closing_day_label, stretch=1)
-        movement_layout.addWidget(self._change_closing_btn)
+        closing_row = QHBoxLayout()
+        closing_row.addWidget(self._closing_day_label, stretch=1)
+        closing_row.addWidget(self._change_closing_btn)
+        movement_form.addRow("Baseline as of:", self._baseline_as_of_label)
+        movement_form.addRow("Closing day:", closing_row)
         layout.addWidget(movement_group)
 
         self._reimport_btn = QPushButton("Re-import Initial Baseline…")
@@ -215,6 +223,8 @@ class SettingsPage(QWidget):
         with get_session() as session:
             config = get_dashboard_config(session)
             closing = get_movement_closing_weekday(session)
+            anchor = get_baseline_anchor_date(session)
+        self._baseline_as_of_label.setText(format_baseline_as_of_label(anchor, closing))
         self._closing_day_label.setText(
             weekday_name(closing) if closing is not None else "Not set"
         )
