@@ -4,12 +4,17 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
+from datetime import date, datetime
 from pathlib import Path
 
 from stock_analysis.config import DEPRECATED_PATTERN
 
 _PERIOD_RE = re.compile(
     r"Period:\s*(\d{2}/\d{2}/\d{4})\s*to\s*(\d{2}/\d{2}/\d{4})",
+    re.IGNORECASE,
+)
+_DATE_PRINTED_RE = re.compile(
+    r"Date Printed\s*:?\s*(\d{2}/\d{2}/\d{4})(?:\s+(\d{2}:\d{2}:\d{2}))?",
     re.IGNORECASE,
 )
 _OPTIMUM_MONTHS_RE = re.compile(
@@ -80,6 +85,43 @@ def extract_period(lines: list[str]) -> tuple[str | None, str | None]:
         if match:
             return match.group(1), match.group(2)
     return None, None
+
+
+def parse_report_date(value: str) -> date | None:
+    try:
+        return datetime.strptime(value.strip(), "%d/%m/%Y").date()
+    except ValueError:
+        return None
+
+
+def extract_date_printed(lines: list[str]) -> datetime | None:
+    for line in lines[:30]:
+        match = _DATE_PRINTED_RE.search(line)
+        if match:
+            date_part = match.group(1)
+            time_part = match.group(2) or "00:00:00"
+            try:
+                return datetime.strptime(f"{date_part} {time_part}", "%d/%m/%Y %H:%M:%S")
+            except ValueError:
+                parsed = parse_report_date(date_part)
+                if parsed is not None:
+                    return datetime.combine(parsed, datetime.min.time())
+    return None
+
+
+def is_ongoing_stockhold(
+    period_start: str | None,
+    period_end: str | None,
+    date_printed: datetime | None,
+) -> bool:
+    if not period_start or not period_end or date_printed is None:
+        return False
+    start = parse_report_date(period_start)
+    end = parse_report_date(period_end)
+    if start is None or end is None:
+        return False
+    printed = date_printed.date()
+    return start <= printed <= end
 
 
 def extract_optimum_months(lines: list[str]) -> float | None:

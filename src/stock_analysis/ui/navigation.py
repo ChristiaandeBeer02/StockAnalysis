@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Protocol
 
 MAX_NAV_STACK = 10
 
@@ -12,9 +11,3 @@ MAX_NAV_STACK = 10
 class NavState:
     sidebar_index: int
     page_state: object | None = None
-
-
-class NavigablePage(Protocol):
-    def capture_nav_state(self) -> object | None: ...
-
-    def restore_nav_state(self, state: object | None) -> None: ...

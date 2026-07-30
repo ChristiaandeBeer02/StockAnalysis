@@ -8,12 +8,13 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
+from typing import Literal
 
 from sqlalchemy import delete, desc, func, select, update
 from sqlalchemy.orm import Session
 
 from stock_analysis.analytics.dashboard import build_period_summary, save_analysis_result
-from stock_analysis.analytics.metrics import DEFAULT_OPTIMUM_STOCK_MONTHS, effective_unit_cost_expr
+from stock_analysis.analytics.metrics import effective_unit_cost_expr
 from stock_analysis.analytics.stock_take import StockTakeComparison, compare_stock_take
 from stock_analysis.baseline.change_log import log_change
 from stock_analysis.db.models import (
@@ -28,22 +29,43 @@ from stock_analysis.db.models import (
     StockTakeLine,
     StockTakeSession,
 )
-from stock_analysis.db.session import get_latest_baseline_version, has_initial_baseline, set_app_state
-from stock_analysis.importers.iq_retail_parser import extract_optimum_months, read_export_lines
+from stock_analysis.analytics.movement_periods import baseline_anchor_date
+from stock_analysis.db.session import (
+    get_latest_baseline_version,
+    has_initial_baseline,
+    set_app_state,
+    set_baseline_anchor_date,
+)
+from stock_analysis.importers.iq_retail_parser import parse_report_date
 from stock_analysis.importers.item_filters import should_skip_item
+from stock_analysis.importers.movement_parser import MovementRow, merge_movement_reports
 from stock_analysis.importers.stockholding_parser import (
     StockholdingParseResult,
     parse_stockholding_file,
 )
-from stock_analysis.importers.turn_parser import TurnRow
-from stock_analysis.importers.turnunder_parser import merge_turn_reports
+from stock_analysis.importers.stocklist_parser import StocklistParseResult, parse_stocklist_file
 
 
 class ImportCancelledError(Exception):
     """Raised when a long-running import is cancelled by the user."""
 
 
-_IMPORT_STATE_KEYS = ("initial_baseline_complete", "enrichment_complete")
+class BackdateValidationError(Exception):
+    """Raised when a backdate import would push any SKU below zero."""
+
+    def __init__(self, skus: list[str]):
+        self.skus = skus
+        preview = ", ".join(skus[:10])
+        suffix = f" (+{len(skus) - 10} more)" if len(skus) > 10 else ""
+        super().__init__(f"Backdate import would push {len(skus)} SKU(s) below zero: {preview}{suffix}")
+
+
+_IMPORT_STATE_KEYS = (
+    "initial_baseline_complete",
+    "enrichment_complete",
+    "movement_closing_weekday",
+    "baseline_anchor_date",
+)
 
 
 @dataclass
@@ -199,6 +221,10 @@ def apply_initial_baseline(
     set_app_state(session, "initial_baseline_complete", "true")
     set_app_state(session, "enrichment_complete", "false")
 
+    anchor = baseline_anchor_date(parsed)
+    if anchor is not None:
+        set_baseline_anchor_date(session, anchor)
+
     return InitialImportSummary(
         import_batch_id=batch.id,
         baseline_version=version_number,
@@ -211,64 +237,88 @@ def apply_initial_baseline(
 
 
 @dataclass
-class TurnImportSummary:
+class MovementImportSummary:
     import_batch_id: int
     baseline_version: int
     items_processed: int
     new_items: int
     qty_changes: int
     deprecated_count: int
-    period_start: str | None
-    period_end: str | None
+    period_start: str
+    period_end: str
     import_type: str
 
 
-def _store_turn_line(session: Session, batch_id: int, item_id: int, row: TurnRow) -> None:
+def _period_length_days(period_start: str, period_end: str) -> float:
+    start = parse_report_date(period_start)
+    end = parse_report_date(period_end)
+    if start is None or end is None:
+        return 30.0
+    days = (end - start).days + 1
+    return float(max(days, 1))
+
+
+def _compute_new_qty(
+    opening: float,
+    row: MovementRow,
+    *,
+    direction: Literal["forward", "backward"],
+) -> float:
+    if direction == "backward":
+        return opening + row.net_sales_qty - row.net_purchases_qty
+    return opening - row.net_sales_qty + row.net_purchases_qty
+
+
+def _store_movement_line(
+    session: Session,
+    batch_id: int,
+    item_id: int,
+    row: MovementRow,
+    *,
+    on_hand: float,
+    avg_monthly_sales: float,
+) -> None:
     session.add(
         PeriodTurnLine(
             import_batch_id=batch_id,
             item_id=item_id,
-            dept=row.dept,
-            supplier=row.supplier,
-            on_hand=row.on_hand,
-            qty_sold_30=row.qty_sold_30,
-            qty_sold_90=row.qty_sold_90,
-            qty_sold_180=row.qty_sold_180,
-            avg_monthly_sales_3mo=row.avg_monthly_sales_3mo,
-            avg_monthly_sales_6mo=row.avg_monthly_sales_6mo,
-            last_unit_cost=row.last_unit_cost,
-            over_stock_qty_3mo=row.over_stock_qty_3mo,
-            over_stock_qty_6mo=row.over_stock_qty_6mo,
-            over_stock_value_3mo=row.over_stock_value_3mo,
-            over_stock_value_6mo=row.over_stock_value_6mo,
-            under_stock_qty_3mo=row.under_stock_qty_3mo,
-            under_stock_qty_6mo=row.under_stock_qty_6mo,
-            under_stock_value_3mo=row.under_stock_value_3mo,
-            under_stock_value_6mo=row.under_stock_value_6mo,
+            dept=row.department or None,
+            supplier=None,
+            on_hand=on_hand,
+            qty_sold_30=0.0,
+            qty_sold_90=row.net_sales_qty,
+            qty_sold_180=0.0,
+            avg_monthly_sales_3mo=avg_monthly_sales,
+            avg_monthly_sales_6mo=0.0,
+            last_unit_cost=row.avg_cost,
+            purchases_qty=row.purchases_qty,
+            returns_qty=row.returns_qty,
+            net_sales_revenue=row.net_sales_revenue,
+            gross_profit=row.gross_profit,
+            gross_margin_pct=row.gross_margin_pct,
         )
     )
 
 
-def apply_turn_import(
+def apply_movement_import(
     session: Session,
-    turn_path: Path,
-    turnunder_path: Path,
+    sales_path: Path,
+    purchases_path: Path,
     *,
     import_type: str,
-) -> TurnImportSummary:
-    merged, period_start, period_end = merge_turn_reports(turn_path, turnunder_path)
-    deprecated = sum(1 for r in merged if r.is_deprecated)
-
-    turn_lines = read_export_lines(turn_path)
-    parsed_optimum = extract_optimum_months(turn_lines)
-    optimum_months = (
-        parsed_optimum if parsed_optimum and parsed_optimum > 0 else DEFAULT_OPTIMUM_STOCK_MONTHS
-    )
+    period_start: str,
+    period_end: str,
+    direction: Literal["forward", "backward"] = "forward",
+) -> MovementImportSummary:
+    parsed = merge_movement_reports(sales_path, purchases_path)
+    merged = parsed.rows
+    deprecated = sum(1 for row in merged if row.is_deprecated)
+    period_days = _period_length_days(period_start, period_end)
 
     batch = ImportBatch(
         import_type=import_type,
-        file_name=turn_path.name,
-        companion_file_name=turnunder_path.name,
+        file_name=sales_path.name,
+        companion_file_name=purchases_path.name,
         period_start=period_start,
         period_end=period_end,
         row_count=len(merged),
@@ -279,26 +329,44 @@ def apply_turn_import(
     session.flush()
 
     version_number = _next_version_number(session)
-    source_type = "enrichment" if import_type == "baseline_enrichment" else "period_turn"
+    if import_type == "baseline_enrichment":
+        source_type = "enrichment"
+    elif import_type == "period_turn_backdate":
+        source_type = "period_turn_backdate"
+    else:
+        source_type = "period_turn"
     version = BaselineVersion(
         version_number=version_number,
         source_type=source_type,
         source_import_id=batch.id,
-        notes=f"{import_type} from {turn_path.name}",
+        notes=f"{import_type} {period_start} to {period_end}",
     )
     session.add(version)
     session.flush()
 
-    turn_codes = {r.code for r in merged}
+    movement_codes = {row.code for row in merged}
     new_items = 0
     qty_changes = 0
 
     sku_map = {item.sku: item for item in session.scalars(select(Item))}
     baseline_map = {row.item_id: row for row in session.scalars(select(BaselineItem))}
 
+    if direction == "backward":
+        negative_skus: list[str] = []
+        for row in merged:
+            if should_skip_item(row.code, row.description):
+                continue
+            item = sku_map.get(row.code)
+            opening = baseline_map.get(item.id).qty_on_hand if item and item.id in baseline_map else 0.0
+            if _compute_new_qty(opening, row, direction=direction) < -0.0001:
+                negative_skus.append(row.code)
+        if negative_skus:
+            raise BackdateValidationError(sorted(negative_skus))
+
     for index, row in enumerate(merged):
         if should_skip_item(row.code, row.description):
             continue
+
         item = sku_map.get(row.code)
         if item is None:
             item = Item(sku=row.code, name=row.description)
@@ -308,20 +376,29 @@ def apply_turn_import(
             new_items += 1
         else:
             item.name = row.description or item.name
-            item.department = row.dept or item.department
-            item.supplier = row.supplier or item.supplier
-            if row.last_unit_cost > 0:
-                item.unit_cost = row.last_unit_cost
+            if row.avg_cost > 0:
+                item.unit_cost = row.avg_cost
             item.is_deprecated = row.is_deprecated
             item.not_in_turn_report = False
 
-        _store_turn_line(session, batch.id, item.id, row)
-
         baseline = baseline_map.get(item.id)
+        opening = baseline.qty_on_hand if baseline is not None else 0.0
+        new_qty = _compute_new_qty(opening, row, direction=direction)
+        avg_monthly_sales = row.net_sales_qty / (period_days / 30.0) if period_days > 0 else 0.0
+
+        _store_movement_line(
+            session,
+            batch.id,
+            item.id,
+            row,
+            on_hand=new_qty,
+            avg_monthly_sales=avg_monthly_sales,
+        )
+
         if baseline is None:
             baseline = BaselineItem(
                 item_id=item.id,
-                qty_on_hand=row.on_hand,
+                qty_on_hand=new_qty,
                 baseline_version_id=version.id,
                 last_update_source=source_type,
             )
@@ -333,25 +410,25 @@ def apply_turn_import(
                 baseline_version_id=version.id,
                 field_changed="qty_on_hand",
                 old_value=None,
-                new_value=str(row.on_hand),
+                new_value=str(new_qty),
                 change_reason=source_type,
                 source_type=source_type,
                 source_import_id=batch.id,
             )
             qty_changes += 1
-        elif baseline.qty_on_hand != row.on_hand:
+        elif baseline.qty_on_hand != new_qty:
             log_change(
                 session,
                 item_id=item.id,
                 baseline_version_id=version.id,
                 field_changed="qty_on_hand",
                 old_value=str(baseline.qty_on_hand),
-                new_value=str(row.on_hand),
+                new_value=str(new_qty),
                 change_reason=source_type,
                 source_type=source_type,
                 source_import_id=batch.id,
             )
-            baseline.qty_on_hand = row.on_hand
+            baseline.qty_on_hand = new_qty
             baseline.baseline_version_id = version.id
             baseline.last_update_source = source_type
             qty_changes += 1
@@ -362,21 +439,19 @@ def apply_turn_import(
         if (index + 1) % 500 == 0:
             session.flush()
 
-    if turn_codes:
+    if movement_codes and direction == "forward":
         session.execute(
-            update(Item).where(Item.sku.notin_(turn_codes)).values(not_in_turn_report=True)
+            update(Item).where(Item.sku.notin_(movement_codes)).values(not_in_turn_report=True)
         )
 
     if import_type == "baseline_enrichment":
         set_app_state(session, "enrichment_complete", "true")
 
-    set_app_state(session, "optimum_stock_months", str(optimum_months))
-
     summary = build_period_summary(session)
     if summary:
         save_analysis_result(session, batch.id, import_type, summary)
 
-    return TurnImportSummary(
+    return MovementImportSummary(
         import_batch_id=batch.id,
         baseline_version=version_number,
         items_processed=len(merged),
@@ -389,14 +464,145 @@ def apply_turn_import(
     )
 
 
-def apply_enrichment(session: Session, turn_path: Path, turnunder_path: Path) -> TurnImportSummary:
-    return apply_turn_import(
-        session, turn_path, turnunder_path, import_type="baseline_enrichment"
+def apply_enrichment(
+    session: Session,
+    sales_path: Path,
+    purchases_path: Path,
+    *,
+    period_start: str,
+    period_end: str,
+) -> MovementImportSummary:
+    return apply_movement_import(
+        session,
+        sales_path,
+        purchases_path,
+        import_type="baseline_enrichment",
+        period_start=period_start,
+        period_end=period_end,
+        direction="forward",
     )
 
 
-def apply_period_import(session: Session, turn_path: Path, turnunder_path: Path) -> TurnImportSummary:
-    return apply_turn_import(session, turn_path, turnunder_path, import_type="period_turn")
+def apply_period_import(
+    session: Session,
+    sales_path: Path,
+    purchases_path: Path,
+    *,
+    period_start: str,
+    period_end: str,
+) -> MovementImportSummary:
+    return apply_movement_import(
+        session,
+        sales_path,
+        purchases_path,
+        import_type="period_turn",
+        period_start=period_start,
+        period_end=period_end,
+        direction="forward",
+    )
+
+
+def apply_backdate_import(
+    session: Session,
+    sales_path: Path,
+    purchases_path: Path,
+    *,
+    period_start: str,
+    period_end: str,
+) -> MovementImportSummary:
+    return apply_movement_import(
+        session,
+        sales_path,
+        purchases_path,
+        import_type="period_turn_backdate",
+        period_start=period_start,
+        period_end=period_end,
+        direction="backward",
+    )
+
+
+def _department_empty(department: str | None) -> bool:
+    return department is None or department.strip() == ""
+
+
+@dataclass
+class StocklistDepartmentImportSummary:
+    import_batch_id: int
+    items_updated: int
+    items_already_set: int
+    discrepancies: list[tuple[str, str, str]]
+    csv_unmatched_skus: int
+    items_without_department: int
+
+
+def apply_stocklist_departments(
+    session: Session,
+    path: Path,
+    *,
+    parsed: StocklistParseResult | None = None,
+    progress_callback: Callable[[int, int], None] | None = None,
+    cancel_event: threading.Event | None = None,
+) -> StocklistDepartmentImportSummary:
+    if not has_initial_baseline(session):
+        raise ValueError("Import initial baseline before importing departments.")
+
+    if parsed is None:
+        parsed = parse_stocklist_file(path)
+
+    batch = ImportBatch(
+        import_type="stocklist_departments",
+        file_name=path.name,
+        row_count=parsed.stats.eligible_rows,
+        status="applied",
+    )
+    session.add(batch)
+    session.flush()
+
+    sku_map = {item.sku: item for item in session.scalars(select(Item))}
+    items_updated = 0
+    items_already_set = 0
+    discrepancies: list[tuple[str, str, str]] = []
+    csv_unmatched_skus = 0
+    total_rows = len(parsed.rows)
+
+    for index, row in enumerate(parsed.rows):
+        _check_cancelled(cancel_event)
+
+        item = sku_map.get(row.code)
+        if item is None:
+            csv_unmatched_skus += 1
+            continue
+
+        csv_dept = row.department.strip()
+        existing = item.department.strip() if item.department else ""
+
+        if _department_empty(existing):
+            if csv_dept:
+                item.department = csv_dept
+                items_updated += 1
+        elif csv_dept and csv_dept != existing:
+            discrepancies.append((row.code, existing, csv_dept))
+            items_already_set += 1
+        else:
+            items_already_set += 1
+
+        if progress_callback is not None:
+            progress_callback(index + 1, total_rows)
+
+    items_without_department = sum(
+        1
+        for item in sku_map.values()
+        if not item.is_deprecated and _department_empty(item.department)
+    )
+
+    return StocklistDepartmentImportSummary(
+        import_batch_id=batch.id,
+        items_updated=items_updated,
+        items_already_set=items_already_set,
+        discrepancies=discrepancies,
+        csv_unmatched_skus=csv_unmatched_skus,
+        items_without_department=items_without_department,
+    )
 
 
 def remove_deprecated_items(session: Session) -> int:

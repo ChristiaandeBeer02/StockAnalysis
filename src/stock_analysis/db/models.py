@@ -129,6 +129,11 @@ class PeriodTurnLine(Base):
     under_stock_qty_6mo: Mapped[float] = mapped_column(Float, default=0.0)
     under_stock_value_3mo: Mapped[float] = mapped_column(Float, default=0.0)
     under_stock_value_6mo: Mapped[float] = mapped_column(Float, default=0.0)
+    purchases_qty: Mapped[float] = mapped_column(Float, default=0.0)
+    returns_qty: Mapped[float] = mapped_column(Float, default=0.0)
+    net_sales_revenue: Mapped[float] = mapped_column(Float, default=0.0)
+    gross_profit: Mapped[float] = mapped_column(Float, default=0.0)
+    gross_margin_pct: Mapped[float] = mapped_column(Float, default=0.0)
 
 
 class AnalysisResult(Base):

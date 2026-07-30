@@ -14,7 +14,7 @@ def test_junk_skus():
 def test_item_status():
     assert item_status(is_deprecated=True, not_in_turn_report=False, has_enrichment=True) == "Deprecated"
     assert (
-        item_status(is_deprecated=False, not_in_turn_report=True, has_enrichment=True) == "No turn data"
+        item_status(is_deprecated=False, not_in_turn_report=True, has_enrichment=True) == "No movement data"
     )
     assert item_status(is_deprecated=False, not_in_turn_report=True, has_enrichment=False) == "Active"
     assert item_status(is_deprecated=False, not_in_turn_report=False, has_enrichment=True) == "Active"

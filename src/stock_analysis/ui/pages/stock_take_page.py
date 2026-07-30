@@ -2,12 +2,10 @@
 
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
-    QFrame,
     QGridLayout,
     QHBoxLayout,
     QLabel,
     QPushButton,
-    QScrollArea,
     QSizePolicy,
     QVBoxLayout,
     QWidget,
@@ -17,7 +15,6 @@ from stock_analysis.baseline.manager import get_stock_take_history, get_stock_ta
 from stock_analysis.db.session import get_session, has_initial_baseline
 from stock_analysis.ui.export_dialog import prompt_export_excel, prompt_export_pdf
 from stock_analysis.ui.widgets.data_table import DataTable
-from stock_analysis.ui.widgets.empty_state import EmptyState
 from stock_analysis.ui.widgets.kpi_card import KpiCard
 from stock_analysis.ui.wizards.stock_take_import_wizard import run_stock_take_wizard
 
@@ -25,50 +22,18 @@ from stock_analysis.ui.wizards.stock_take_import_wizard import run_stock_take_wi
 class StockTakePage(QWidget):
     data_changed = Signal()
 
-    def __init__(self, parent=None, *, embedded: bool = False):
+    def __init__(self, parent=None):
         super().__init__(parent)
-        self._embedded = embedded
         self._variance_rows: list[list] = []
 
-        if embedded:
-            self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
-            root = QVBoxLayout(self)
-            root.setContentsMargins(0, 0, 0, 0)
-            root.setSpacing(16)
-            self._build_content(root)
-            root.setStretchFactor(self._history_table, 1)
-            for table in (self._variance_table, self._history_table):
-                table.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-            return
-
-        outer = QVBoxLayout(self)
-        outer.setContentsMargins(0, 0, 0, 0)
-
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll.setFrameShape(QFrame.Shape.NoFrame)
-        outer.addWidget(scroll)
-
-        container = QWidget()
-        self._layout = QVBoxLayout(container)
-        self._layout.setContentsMargins(24, 24, 24, 24)
-        self._layout.setSpacing(16)
-        scroll.setWidget(container)
-
-        self._empty = EmptyState(
-            "No baseline yet",
-            "Complete Step 1 (initial baseline import) before uploading a stock take.",
-        )
-        self._layout.addWidget(self._empty)
-
-        self._content = QWidget()
-        content_layout = QVBoxLayout(self._content)
-        content_layout.setContentsMargins(0, 0, 0, 0)
-        content_layout.setSpacing(16)
-        self._build_content(content_layout)
-        self._content.hide()
-        self._layout.addWidget(self._content)
-        self._layout.addStretch()
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        root = QVBoxLayout(self)
+        root.setContentsMargins(0, 0, 0, 0)
+        root.setSpacing(16)
+        self._build_content(root)
+        root.setStretchFactor(self._history_table, 1)
+        for table in (self._variance_table, self._history_table):
+            table.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
 
     def _build_content(self, layout: QVBoxLayout) -> None:
         top = QHBoxLayout()
@@ -180,16 +145,9 @@ class StockTakePage(QWidget):
                 ]
                 self._variance_table.set_rows(self._variance_rows)
 
-        if self._embedded:
-            self._fit_embedded_tables()
-        else:
-            self._fit_tables()
+        self._fit_tables()
 
     def _fit_tables(self) -> None:
-        for table in (self._variance_table, self._history_table):
-            table.resize_height_to_contents()
-
-    def _fit_embedded_tables(self) -> None:
         self._variance_table.resize_height_to_contents()
         if self._history_table.model().rowCount() > 0:
             self._history_table.resize_height_to_contents()
@@ -205,19 +163,9 @@ class StockTakePage(QWidget):
         with get_session() as session:
             ready = has_initial_baseline(session)
 
-        if self._embedded:
-            if not ready:
-                self.hide()
-                return
-            self.show()
-            self._load_data()
-            return
-
         if not ready:
-            self._empty.show()
-            self._content.hide()
+            self.hide()
             return
 
-        self._empty.hide()
-        self._content.show()
+        self.show()
         self._load_data()

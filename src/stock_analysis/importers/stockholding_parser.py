@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 
 from stock_analysis.config import SKIP_STOCKHOLDING_CODES
 from stock_analysis.importers.item_filters import should_skip_item
 from stock_analysis.importers.iq_retail_parser import (
     ParseStats,
+    extract_date_printed,
     extract_period,
     is_deprecated_description,
     parse_currency,
@@ -34,6 +36,7 @@ class StockholdingParseResult:
     rows: list[StockholdingRow]
     period_start: str | None
     period_end: str | None
+    date_printed: datetime | None
     stats: ParseStats
 
 
@@ -103,6 +106,7 @@ def _parse_data_row(parts: list[str]) -> StockholdingRow | None:
 def parse_stockholding_file(path: Path) -> StockholdingParseResult:
     lines = read_export_lines(path)
     period_start, period_end = extract_period(lines)
+    date_printed = extract_date_printed(lines)
 
     rows: list[StockholdingRow] = []
     stats = ParseStats()
@@ -143,5 +147,6 @@ def parse_stockholding_file(path: Path) -> StockholdingParseResult:
         rows=rows,
         period_start=period_start,
         period_end=period_end,
+        date_printed=date_printed,
         stats=stats,
     )

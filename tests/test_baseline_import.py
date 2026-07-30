@@ -26,7 +26,11 @@ from stock_analysis.db.models import (
     PeriodTurnLine,
     StockTakeSession,
 )
-from stock_analysis.db.session import has_enrichment, has_initial_baseline
+from stock_analysis.db.session import (
+    get_baseline_anchor_date,
+    has_enrichment,
+    has_initial_baseline,
+)
 from stock_analysis.importers.stockholding_parser import parse_stockholding_file
 from tests.helpers.import_snapshot import (
     build_stockholding_row,
@@ -75,6 +79,7 @@ def test_initial_baseline_import_on_empty_db(session: Session, tmp_path: Path) -
     assert has_initial_baseline(session)
     assert not has_enrichment(session)
     assert session.scalar(select(func.count(Item.id))) == 6
+    assert get_baseline_anchor_date(session) is not None
 
 
 def test_reimport_wipes_existing_data_and_starts_clean(session: Session, tmp_path: Path) -> None:
@@ -82,8 +87,10 @@ def test_reimport_wipes_existing_data_and_starts_clean(session: Session, tmp_pat
     apply_initial_baseline(session, tmp_path / "sthold2.csv")
     apply_enrichment(
         session,
-        tmp_path / "IQStockTurn.csv",
-        tmp_path / "IQStockTurnunder.csv",
+        tmp_path / "Sales_Detail_sample.csv",
+        tmp_path / "PurchasesDetailed_sample.csv",
+        period_start="01/01/2026",
+        period_end="31/01/2026",
     )
     session.commit()
 
@@ -129,8 +136,10 @@ def test_reset_import_data_clears_import_tables(session: Session, tmp_path: Path
     apply_initial_baseline(session, tmp_path / "sthold2.csv")
     apply_enrichment(
         session,
-        tmp_path / "IQStockTurn.csv",
-        tmp_path / "IQStockTurnunder.csv",
+        tmp_path / "Sales_Detail_sample.csv",
+        tmp_path / "PurchasesDetailed_sample.csv",
+        period_start="01/01/2026",
+        period_end="31/01/2026",
     )
     session.commit()
 
@@ -293,6 +302,81 @@ def test_init_db_migrates_legacy_analysis_results_schema(tmp_path: Path) -> None
             result = session.scalar(select(AnalysisResult))
             assert result is not None
             assert result.stock_take_session_id is None
+    finally:
+        db_session.get_database_path = get_database_path
+        db_session._engine = None
+        db_session._SessionLocal = None
+
+
+def test_init_db_migrates_period_turn_profit_columns(tmp_path: Path) -> None:
+    from sqlalchemy import create_engine, text
+
+    from stock_analysis.db.session import get_database_path, init_db
+    import stock_analysis.db.session as db_session
+
+    db_path = tmp_path / "legacy_turn.db"
+    engine = create_engine(f"sqlite:///{db_path}", echo=False)
+    with engine.begin() as conn:
+        conn.execute(
+            text(
+                """
+                CREATE TABLE import_batches (
+                    id INTEGER PRIMARY KEY,
+                    import_type VARCHAR(32) NOT NULL,
+                    file_name VARCHAR(512) NOT NULL
+                )
+                """
+            )
+        )
+        conn.execute(
+            text(
+                """
+                CREATE TABLE items (
+                    id INTEGER PRIMARY KEY,
+                    sku VARCHAR(64) NOT NULL
+                )
+                """
+            )
+        )
+        conn.execute(
+            text(
+                """
+                CREATE TABLE period_turn_lines (
+                    id INTEGER PRIMARY KEY,
+                    import_batch_id INTEGER NOT NULL,
+                    item_id INTEGER NOT NULL,
+                    purchases_qty FLOAT DEFAULT 0,
+                    returns_qty FLOAT DEFAULT 0
+                )
+                """
+            )
+        )
+        conn.execute(
+            text(
+                """
+                CREATE TABLE analysis_results (
+                    id INTEGER PRIMARY KEY,
+                    analysis_type VARCHAR(64) NOT NULL,
+                    import_batch_id INTEGER NOT NULL
+                )
+                """
+            )
+        )
+
+    db_session._engine = None
+    db_session._SessionLocal = None
+    try:
+        db_session.get_database_path = lambda: db_path
+        init_db()
+
+        with engine.connect() as conn:
+            columns = {
+                row[1]
+                for row in conn.execute(text("PRAGMA table_info(period_turn_lines)")).fetchall()
+            }
+        assert "net_sales_revenue" in columns
+        assert "gross_profit" in columns
+        assert "gross_margin_pct" in columns
     finally:
         db_session.get_database_path = get_database_path
         db_session._engine = None

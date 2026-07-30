@@ -1,5 +1,7 @@
 __pycache__/
 *.py[cod]
+*.log
+understocked.xlsx
 .pytest_cache/
 .ruff_cache/
 *.egg-info/
@@ -11,3 +13,8 @@ venv/
 IQStockTurn.csv
 IQStockTurnunder.csv
 sthold2.csv
+StockMaintenance20260728_102642_7.csv
+StockAuditTracking20260728_101034_7.csv
+Sales_Detail20260728_104155_7.csv
+PurchasesDetailed20260728_104100_7.csv
+StockLists20260729_144232_3.csv

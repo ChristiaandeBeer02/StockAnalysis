@@ -4,7 +4,11 @@ from pathlib import Path
 
 import pytest
 
-from stock_analysis.importers.iq_retail_parser import should_skip_line
+from stock_analysis.importers.iq_retail_parser import (
+    extract_date_printed,
+    is_ongoing_stockhold,
+    should_skip_line,
+)
 from stock_analysis.importers.stockholding_parser import (
     _parse_data_row,
     parse_stockholding_file,
@@ -59,3 +63,22 @@ def test_deprecated_detection():
 
     assert is_deprecated_description("zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz")
     assert not is_deprecated_description("Bosch Laser Level GLL 12-22")
+
+
+def test_extract_date_printed() -> None:
+    lines = [
+        'Manta DIY (Pty) Ltd,,,,,,Date Printed :27/07/2026 11:09:11,,,,Page No 1,,',
+        "Period: 01/07/2026 to 31/07/2026,",
+    ]
+    printed = extract_date_printed(lines)
+    assert printed is not None
+    assert printed.strftime("%d/%m/%Y %H:%M:%S") == "27/07/2026 11:09:11"
+
+
+def test_is_ongoing_stockhold() -> None:
+    from datetime import datetime
+
+    printed = datetime(2026, 7, 27, 11, 9, 11)
+    assert is_ongoing_stockhold("01/07/2026", "31/07/2026", printed) is True
+    assert is_ongoing_stockhold("01/07/2026", "30/06/2026", printed) is False
+    assert is_ongoing_stockhold("01/07/2026", "31/07/2026", None) is False

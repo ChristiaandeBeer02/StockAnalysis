@@ -64,6 +64,35 @@ def _migrate_schema(engine) -> None:
                 )
             )
 
+        if "period_turn_lines" in {
+            row[0] for row in conn.execute(text("SELECT name FROM sqlite_master WHERE type='table'"))
+        }:
+            turn_columns = _table_columns(conn, "period_turn_lines")
+            if "purchases_qty" not in turn_columns:
+                conn.execute(
+                    text("ALTER TABLE period_turn_lines ADD COLUMN purchases_qty FLOAT DEFAULT 0")
+                )
+            if "returns_qty" not in turn_columns:
+                conn.execute(
+                    text("ALTER TABLE period_turn_lines ADD COLUMN returns_qty FLOAT DEFAULT 0")
+                )
+            if "net_sales_revenue" not in turn_columns:
+                conn.execute(
+                    text(
+                        "ALTER TABLE period_turn_lines ADD COLUMN net_sales_revenue FLOAT DEFAULT 0"
+                    )
+                )
+            if "gross_profit" not in turn_columns:
+                conn.execute(
+                    text("ALTER TABLE period_turn_lines ADD COLUMN gross_profit FLOAT DEFAULT 0")
+                )
+            if "gross_margin_pct" not in turn_columns:
+                conn.execute(
+                    text(
+                        "ALTER TABLE period_turn_lines ADD COLUMN gross_margin_pct FLOAT DEFAULT 0"
+                    )
+                )
+
 
 def init_db() -> None:
     from sqlalchemy import text
@@ -111,6 +140,44 @@ def set_app_state(session: Session, key: str, value: str) -> None:
         existing.value = value
     else:
         session.add(AppState(key=key, value=value))
+
+
+_MOVEMENT_CLOSING_WEEKDAY_KEY = "movement_closing_weekday"
+_BASELINE_ANCHOR_DATE_KEY = "baseline_anchor_date"
+
+
+def get_movement_closing_weekday(session: Session) -> int | None:
+    state = session.get(AppState, _MOVEMENT_CLOSING_WEEKDAY_KEY)
+    if not state or not state.value:
+        return None
+    try:
+        weekday = int(state.value)
+    except ValueError:
+        return None
+    if 0 <= weekday <= 6:
+        return weekday
+    return None
+
+
+def set_movement_closing_weekday(session: Session, weekday: int) -> None:
+    if weekday < 0 or weekday > 6:
+        raise ValueError("weekday must be 0 (Monday) through 6 (Sunday)")
+    set_app_state(session, _MOVEMENT_CLOSING_WEEKDAY_KEY, str(weekday))
+
+
+def get_baseline_anchor_date(session: Session):
+    from stock_analysis.importers.iq_retail_parser import parse_report_date
+
+    state = session.get(AppState, _BASELINE_ANCHOR_DATE_KEY)
+    if not state or not state.value:
+        return None
+    return parse_report_date(state.value)
+
+
+def set_baseline_anchor_date(session: Session, value) -> None:
+    from stock_analysis.analytics.movement_periods import format_report_date
+
+    set_app_state(session, _BASELINE_ANCHOR_DATE_KEY, format_report_date(value))
 
 
 def get_latest_baseline_version(session: Session) -> BaselineVersion | None:

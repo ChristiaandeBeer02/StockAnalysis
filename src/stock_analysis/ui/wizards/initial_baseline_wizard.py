@@ -17,12 +17,18 @@ from PySide6.QtWidgets import (
 )
 
 from stock_analysis.analytics.cache import invalidate_summaries
+from stock_analysis.analytics.movement_periods import (
+    baseline_anchor_date,
+    format_report_date,
+    weekday_name,
+)
 from stock_analysis.baseline.manager import apply_initial_baseline
 from stock_analysis.db.session import get_session, has_initial_baseline
 from stock_analysis.importers.stockholding_parser import (
     StockholdingParseResult,
     parse_stockholding_file,
 )
+from stock_analysis.ui.stockhold_warnings import confirm_ongoing_stockhold
 from stock_analysis.ui.workers.import_worker import run_in_background
 
 
@@ -66,11 +72,15 @@ class InitialBaselineWizard(QDialog):
         self._deprecated = QLabel("—")
         self._stock_value = QLabel("—")
         self._period = QLabel("—")
+        self._date_printed = QLabel("—")
+        self._stock_as_of = QLabel("—")
         self._preview.addRow("Items parsed:", self._parsed_label)
         self._preview.addRow("Junk skipped:", self._junk)
         self._preview.addRow("Deprecated:", self._deprecated)
         self._preview.addRow("Total stock value:", self._stock_value)
         self._preview.addRow("Report period:", self._period)
+        self._preview.addRow("Date printed:", self._date_printed)
+        self._preview.addRow("Stock as of:", self._stock_as_of)
         layout.addLayout(self._preview)
 
         buttons = QHBoxLayout()
@@ -83,6 +93,10 @@ class InitialBaselineWizard(QDialog):
         buttons.addWidget(self._cancel_btn)
         buttons.addWidget(self._import_btn)
         layout.addLayout(buttons)
+
+    @property
+    def parsed(self) -> StockholdingParseResult | None:
+        return self._parsed
 
     def closeEvent(self, event: QCloseEvent) -> None:
         if self._importing:
@@ -132,6 +146,17 @@ class InitialBaselineWizard(QDialog):
         self._deprecated.setText(str(parsed.stats.deprecated_rows))
         self._stock_value.setText(f"R {total_value:,.2f}")
         self._period.setText(period)
+        printed = "—"
+        if parsed.date_printed is not None:
+            printed = parsed.date_printed.strftime("%d/%m/%Y %H:%M:%S")
+        self._date_printed.setText(printed)
+        anchor = baseline_anchor_date(parsed)
+        if anchor is not None:
+            self._stock_as_of.setText(
+                f"{format_report_date(anchor)} ({weekday_name(anchor.weekday())})"
+            )
+        else:
+            self._stock_as_of.setText("—")
         self._import_btn.setEnabled(len(eligible_rows) > 0)
 
     def _eligible_row_count(self) -> int:
@@ -153,13 +178,16 @@ class InitialBaselineWizard(QDialog):
             reply = QMessageBox.warning(
                 self,
                 "Confirm Re-import",
-                "This will delete all existing inventory, turn reports, stock takes, "
+                "This will delete all existing inventory, movement reports, stock takes, "
                 "and import history, then load the new baseline.\n\n"
-                "You will need to re-run enrichment (Step 2).\n\nContinue?",
+                "You will need to re-run movement import (Step 2).\n\nContinue?",
                 QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             )
             if reply != QMessageBox.StandardButton.Yes:
                 return
+
+        if not confirm_ongoing_stockhold(self, self._parsed):
+            return
 
         path = self._selected_path
         parsed = self._parsed

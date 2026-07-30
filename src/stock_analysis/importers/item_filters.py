@@ -41,5 +41,5 @@ def item_status(*, is_deprecated: bool, not_in_turn_report: bool, has_enrichment
     if is_deprecated:
         return "Deprecated"
     if has_enrichment and not_in_turn_report:
-        return "No turn data"
+        return "No movement data"
     return "Active"

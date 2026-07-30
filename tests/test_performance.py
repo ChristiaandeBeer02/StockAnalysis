@@ -54,15 +54,15 @@ def test_summary_cache_deduplicates_period_summary(session: Session) -> None:
     _seed_period_data(session)
     invalidate_summaries()
     load_summaries(session)
-    first = get_period_summary_cached(session, None)
-    second = get_period_summary_cached(session, None)
+    first = get_period_summary_cached(session)
+    second = get_period_summary_cached(session)
     assert first is second
 
 
 def test_abc_summary_reuses_report(session: Session) -> None:
     _seed_period_data(session)
-    report = abc_report(session, None)
-    summary = abc_summary(session, None, report=report)
+    report = abc_report(session)
+    summary = abc_summary(session, report=report)
     assert sum(summary.values()) == len(report)
 
 

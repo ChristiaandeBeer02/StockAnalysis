@@ -18,6 +18,16 @@ def display_dept(code: str | None, nickname_map: dict[str, str] | None = None) -
     return code
 
 
+def list_item_departments(session: Session) -> list[str]:
+    rows = session.execute(
+        select(Item.department)
+        .distinct()
+        .where(Item.department.is_not(None))
+        .order_by(Item.department)
+    ).scalars().all()
+    return [row for row in rows if row and row.strip()]
+
+
 def list_imported_departments(session: Session) -> list[str]:
     item_depts = select(Item.department.label("dept")).where(Item.department.is_not(None))
     turn_depts = select(PeriodTurnLine.dept.label("dept")).where(PeriodTurnLine.dept.is_not(None))
@@ -53,3 +63,23 @@ def save_nicknames(session: Session, mapping: dict[str, str]) -> None:
     for code, row in existing.items():
         if code not in seen:
             session.delete(row)
+
+
+def update_item_department(session: Session, item_id: int, department: str | None) -> None:
+    item = session.get(Item, item_id)
+    if not item:
+        raise ValueError("Item not found")
+    item.department = department or None
+
+
+def flush_item_departments(session: Session) -> int:
+    """Clear department on every item and movement line. Returns items cleared."""
+    cleared = 0
+    for item in session.scalars(select(Item)):
+        if item.department:
+            item.department = None
+            cleared += 1
+    for line in session.scalars(select(PeriodTurnLine)):
+        if line.dept:
+            line.dept = None
+    return cleared

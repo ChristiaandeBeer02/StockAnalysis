@@ -37,6 +37,20 @@ def sales_value(qty_sold_90: float, unit_cost: float) -> float:
     return qty_sold_90 * unit_cost
 
 
+def gross_margin_pct(profit: float, revenue: float) -> float:
+    return (profit / revenue * 100.0) if revenue else 0.0
+
+
+def markup_pct(profit: float, cost: float) -> float:
+    return (profit / cost * 100.0) if cost else 0.0
+
+
+def pct_in_range(value: float, min_pct: float, max_pct: float, mode: str) -> bool:
+    """Return True when value matches the range filter (mode: 'inside' or 'outside')."""
+    inside = min_pct <= value <= max_pct
+    return inside if mode == "inside" else not inside
+
+
 def target_stock_qty(avg_monthly_sales_3mo: float, optimum_months: float) -> float:
     return avg_monthly_sales_3mo * optimum_months
 
@@ -66,6 +80,21 @@ def stock_position_from_line(
     over_qty = computed_overstock_qty(on_hand, line.avg_monthly_sales_3mo, optimum_months)
     under_qty = computed_understock_qty(on_hand, line.avg_monthly_sales_3mo, optimum_months)
     return over_qty, under_qty
+
+
+def stock_position_from_weekly_sales(
+    on_hand: float,
+    total_qty_sold: float,
+    lookback_weeks: int,
+    optimum_months: float = DEFAULT_OPTIMUM_STOCK_MONTHS,
+) -> tuple[float, float]:
+    """Return (over_qty, under_qty) using average weekly sales across the lookback window."""
+    weeks = max(1, lookback_weeks)
+    avg_monthly_sales = (total_qty_sold / weeks) * (30.0 / 7.0)
+    return (
+        computed_overstock_qty(on_hand, avg_monthly_sales, optimum_months),
+        computed_understock_qty(on_hand, avg_monthly_sales, optimum_months),
+    )
 
 
 def stock_health_category(

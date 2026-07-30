@@ -16,6 +16,8 @@ from PySide6.QtWidgets import (
 from stock_analysis.analytics.stock_take import StockTakeComparison
 from stock_analysis.baseline.manager import apply_stock_take_reconcile, preview_stock_take
 from stock_analysis.db.session import get_session
+from stock_analysis.importers.stockholding_parser import parse_stockholding_file
+from stock_analysis.ui.stockhold_warnings import confirm_ongoing_stockhold
 from stock_analysis.ui.widgets.data_table import DataTable
 from stock_analysis.ui.workers.import_worker import run_in_background
 
@@ -169,6 +171,10 @@ class StockTakeImportWizard(QDialog):
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
         )
         if reply != QMessageBox.StandardButton.Yes:
+            return
+
+        parsed = parse_stockholding_file(self._selected_path)
+        if not confirm_ongoing_stockhold(self, parsed):
             return
 
         try:

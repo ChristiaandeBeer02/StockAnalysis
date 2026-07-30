@@ -59,6 +59,3 @@ class DashboardTile(QFrame):
                 w.setParent(None)
         widget.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self._content_layout.addWidget(widget, stretch=1)
-
-    def content_layout(self) -> QVBoxLayout:
-        return self._content_layout

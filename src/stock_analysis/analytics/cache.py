@@ -7,7 +7,7 @@ from dataclasses import dataclass, field
 from sqlalchemy.orm import Session
 
 from stock_analysis.analytics.dashboard import build_period_summary, list_period_batches
-from stock_analysis.analytics.lookback import DEFAULT_LOOKBACK, get_lookback_days
+from stock_analysis.analytics.lookback import DEFAULT_LOOKBACK_WEEKS, get_lookback_weeks
 from stock_analysis.baseline.manager import get_baseline_summary
 
 
@@ -15,7 +15,7 @@ from stock_analysis.baseline.manager import get_baseline_summary
 class AppSummaries:
     baseline: dict
     batches: list[dict]
-    period_by_key: dict[tuple[int | None, int], dict] = field(default_factory=dict)
+    period_by_key: dict[tuple[int, int, int], dict] = field(default_factory=dict)
 
 
 _cache: AppSummaries | None = None
@@ -24,6 +24,12 @@ _cache: AppSummaries | None = None
 def invalidate_summaries() -> None:
     global _cache
     _cache = None
+
+
+def invalidate_period_summaries() -> None:
+    global _cache
+    if _cache is not None:
+        _cache.period_by_key.clear()
 
 
 def load_summaries(session: Session) -> AppSummaries:
@@ -38,15 +44,20 @@ def load_summaries(session: Session) -> AppSummaries:
 
 def get_period_summary_cached(
     session: Session,
-    batch_id: int | None = None,
-    lookback_days: int | None = None,
+    lookback_weeks: int | None = None,
+    *,
+    stock_batch_offset: int = 0,
+    sales_batch_offset: int = 0,
 ) -> dict:
-    if lookback_days is None:
-        lookback_days = get_lookback_days(session)
+    if lookback_weeks is None:
+        lookback_weeks = get_lookback_weeks(session)
     summaries = load_summaries(session)
-    key = (batch_id, lookback_days)
+    key = (lookback_weeks, stock_batch_offset, sales_batch_offset)
     if key not in summaries.period_by_key:
         summaries.period_by_key[key] = build_period_summary(
-            session, batch_id, lookback_days
+            session,
+            lookback_weeks,
+            stock_batch_offset=stock_batch_offset,
+            sales_batch_offset=sales_batch_offset,
         )
     return summaries.period_by_key[key]

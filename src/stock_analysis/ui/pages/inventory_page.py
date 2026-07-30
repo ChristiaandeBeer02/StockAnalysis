@@ -28,14 +28,18 @@ from stock_analysis.analytics.cache import get_period_summary_cached, invalidate
 from stock_analysis.analytics.dashboard import (
     build_inventory_list_summary,
     build_item_summary,
-    list_period_batches,
 )
-from stock_analysis.analytics.department_names import display_dept, load_nickname_map
+from stock_analysis.analytics.department_names import (
+    display_dept,
+    list_item_departments,
+    load_nickname_map,
+    update_item_department,
+)
 from stock_analysis.analytics.lookback import (
-    get_lookback_days,
     lookback_label,
-    qty_column_label,
+    over_qty_label,
     sales_period_label,
+    under_qty_label,
 )
 from stock_analysis.db.models import Item
 from stock_analysis.db.session import get_session, has_enrichment, has_initial_baseline
@@ -54,13 +58,12 @@ from stock_analysis.ui.widgets.data_table import DataTable
 from stock_analysis.ui.widgets.empty_state import EmptyState
 from stock_analysis.ui.widgets.kpi_card import KpiCard
 from stock_analysis.ui.widgets.report_header import ReportHeader
-from stock_analysis.ui.widgets.sales_period_combo import (
-    create_sales_period_combo,
-    sync_sales_period_combo,
-    update_lookback_tooltip,
+from stock_analysis.ui.widgets.sales_period_weeks import (
+    create_sales_period_weeks,
+    sync_sales_period_weeks,
 )
 
-STATUS_OPTIONS = ["Active", "No turn data", "Deprecated", "All"]
+STATUS_OPTIONS = ["Active", "Deprecated", "All"]
 
 _OVERVIEW_TAB = 0
 _ITEMS_TAB = 1
@@ -72,18 +75,17 @@ class InventoryNavState:
     dept_filter: str | None
     search_text: str
     status_filter: str
-    selected_batch_id: int | None
 
 
 class ItemDetailPage(QWidget):
     back_requested = Signal()
+    department_changed = Signal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setObjectName("dashboardCanvas")
         self._item_id: int | None = None
         self._sku = ""
-        self._batch_id: int | None = None
         self._all_history_rows: list[dict] = []
         self._history_filter_status: str | None = None
         self._export_title = "Item History"
@@ -106,23 +108,23 @@ class ItemDetailPage(QWidget):
         back_btn.clicked.connect(self.back_requested.emit)
         self._header = ReportHeader("Item Detail", "")
         self._header.add_control(back_btn)
-        self._period_combo = QComboBox()
-        self._period_combo.setMinimumWidth(200)
-        self._period_combo.currentIndexChanged.connect(self._on_period_changed)
-        self._header.add_control(QLabel("Period:"))
-        self._header.add_control(self._period_combo)
-        self._detail_lookback = create_sales_period_combo(
+        self._detail_lookback = create_sales_period_weeks(
             self, on_changed=self._on_detail_lookback_changed
         )
         self._header.add_control(QLabel("Sales period:"))
         self._header.add_control(self._detail_lookback)
+        self._dept_combo = QComboBox()
+        self._dept_combo.setMinimumWidth(160)
+        self._dept_combo.currentIndexChanged.connect(self._on_dept_changed)
+        self._header.add_control(QLabel("Department:"))
+        self._header.add_control(self._dept_combo)
         layout.addWidget(self._header, 0, 0, 1, 6)
 
         self._kpi_on_hand = KpiCard("On Hand")
         self._kpi_value = KpiCard("Stock Value")
         self._kpi_sales = KpiCard("Sales")
-        self._kpi_over = KpiCard("Over Qty (3mo)")
-        self._kpi_under = KpiCard("Under Qty (3mo)")
+        self._kpi_over = KpiCard("Over Qty")
+        self._kpi_under = KpiCard("Under Qty")
         self._kpi_abc = KpiCard("ABC Class")
         self._kpi_over.set_accent("warning")
         self._kpi_under.set_accent("danger")
@@ -145,7 +147,7 @@ class ItemDetailPage(QWidget):
         sales_layout = QHBoxLayout(sales_tab)
         sales_layout.setContentsMargins(0, 0, 0, 0)
         sales_layout.setSpacing(8)
-        self._sales_chart = ChartTile("Sales by Period")
+        self._sales_chart = ChartTile("Sales over Period")
         self._sales_chart.point_clicked.connect(self._on_period_bar_click)
         self._sales_mix_chart = ChartTile("Sales Mix")
         sales_layout.addWidget(self._sales_chart, 1)
@@ -185,6 +187,9 @@ class ItemDetailPage(QWidget):
         self._history_tile.add_action(clear_btn)
         self._history_tile.add_action(export_btn)
         self._history = DataTable()
+        self._history.set_headers(
+            ["Period", "Qty Sold", "Over Qty", "Under Qty", "Unit Cost"]
+        )
         self._history.setMaximumHeight(280)
         self._history_tile.set_content(self._history)
         layout.addWidget(self._history_tile, 3, 0, 1, 6)
@@ -193,19 +198,72 @@ class ItemDetailPage(QWidget):
         layout.setRowStretch(2, 3)
         layout.setRowStretch(3, 1)
 
-        self._batch_ids: list[int] = []
         self._nickname_map: dict[str, str] = {}
-        self._lookback_days = 90
+        self._lookback_weeks = 1
+        self._populating_dept = False
 
-    def _on_detail_lookback_changed(self) -> None:
-        self._lookback_days = self._detail_lookback.currentData() or 90
-        self._kpi_sales.set_title(sales_period_label(self._lookback_days))
+    def _set_header_subtitle(self, data: dict) -> None:
+        chips = [data["department"], data["supplier"]]
+        if data.get("is_deprecated"):
+            chips.append("Deprecated")
+        if data.get("not_in_turn_report"):
+            chips.append("No movement data")
+        self._header.set_subtitle(
+            f"{data['sku']} — {data['name']}  ·  " + "  ·  ".join(c for c in chips if c and c != "—")
+        )
+
+    def _populate_dept_combo(self, current_code: str | None) -> None:
+        with get_session() as session:
+            departments = list_item_departments(session)
+
+        codes = list(departments)
+        if current_code and current_code not in codes:
+            codes.append(current_code)
+        codes.sort()
+
+        self._populating_dept = True
+        self._dept_combo.blockSignals(True)
+        self._dept_combo.clear()
+        self._dept_combo.addItem("—", None)
+        for code in codes:
+            self._dept_combo.addItem(display_dept(code, self._nickname_map), code)
+
+        if current_code:
+            index = self._dept_combo.findData(current_code)
+            self._dept_combo.setCurrentIndex(index if index >= 0 else 0)
+        else:
+            self._dept_combo.setCurrentIndex(0)
+
+        has_departments = bool(codes)
+        self._dept_combo.setEnabled(has_departments)
+        self._dept_combo.setToolTip("" if has_departments else "Import departments first")
+        self._dept_combo.blockSignals(False)
+        self._populating_dept = False
+
+    def _on_dept_changed(self, _index: int) -> None:
+        if self._populating_dept or self._item_id is None:
+            return
+        new_dept = self._dept_combo.currentData()
+        try:
+            with get_session() as session:
+                update_item_department(session, self._item_id, new_dept)
+        except ValueError as exc:
+            QMessageBox.critical(self, "Update Failed", str(exc))
+            self._reload_item()
+            return
+        invalidate_summaries()
+        self.department_changed.emit()
         self._reload_item()
 
-    def _on_period_changed(self, index: int) -> None:
-        if self._item_id is None or index < 0 or index >= len(self._batch_ids):
-            return
-        self._batch_id = self._batch_ids[index]
+    def _update_lookback_kpi_titles(self) -> None:
+        weeks = self._lookback_weeks
+        self._kpi_sales.set_title(sales_period_label(weeks))
+        self._kpi_over.set_title(over_qty_label(weeks))
+        self._kpi_under.set_title(under_qty_label(weeks))
+
+    def _on_detail_lookback_changed(self) -> None:
+        self._lookback_weeks = self._detail_lookback.value()
+        self._update_lookback_kpi_titles()
         self._reload_item()
 
     def _on_period_bar_click(self, label: str) -> None:
@@ -232,9 +290,7 @@ class ItemDetailPage(QWidget):
         self._history_display = [
             [
                 r["period"],
-                f"{r['qty_30']:g}",
-                f"{r['qty_90']:g}",
-                f"{r['qty_180']:g}",
+                f"{r['qty_sold']:g}",
                 f"{r['over_qty']:g}",
                 f"{r['under_qty']:.2f}",
                 f"{r['unit_cost']:.2f}" if r["unit_cost"] else "—",
@@ -250,52 +306,37 @@ class ItemDetailPage(QWidget):
     def _export_history(self) -> None:
         headers = [
             "Period",
-            "Qty 30d",
-            "Qty 90d",
-            "Qty 180d",
+            "Qty Sold",
             "Over Qty",
             "Under Qty",
             "Unit Cost",
         ]
         prompt_export_excel(self, self._export_title, headers, self._history_display, "item_history.xlsx")
 
-    def _populate_period_combo(self, batches: list[dict]) -> None:
-        self._period_combo.blockSignals(True)
-        self._period_combo.clear()
-        self._batch_ids = []
-        for batch in batches:
-            self._period_combo.addItem(batch["label"])
-            self._batch_ids.append(batch["id"])
-        if self._batch_id in self._batch_ids:
-            self._period_combo.setCurrentIndex(self._batch_ids.index(self._batch_id))
-        elif self._batch_ids:
-            self._period_combo.setCurrentIndex(0)
-            self._batch_id = self._batch_ids[0]
-        self._period_combo.blockSignals(False)
-
     def _reload_item(self) -> None:
         if self._item_id is None:
             return
         with get_session() as session:
             self._nickname_map = load_nickname_map(session)
-            self._lookback_days = get_lookback_days(session)
-            sync_sales_period_combo(self._detail_lookback)
+            self._lookback_weeks = self._detail_lookback.value()
+            sync_sales_period_weeks(self._detail_lookback)
             data = build_item_summary(
                 session,
                 self._item_id,
-                self._batch_id,
                 self._nickname_map,
-                self._lookback_days,
+                self._lookback_weeks,
             )
         if not data:
             return
+        self._set_header_subtitle(data)
+        self._populate_dept_combo(data.get("department_code"))
         self._apply_summary(data)
 
     def show_item(self, sku: str) -> None:
         with get_session() as session:
             self._nickname_map = load_nickname_map(session)
-            self._lookback_days = get_lookback_days(session)
-            sync_sales_period_combo(self._detail_lookback)
+            self._lookback_weeks = self._detail_lookback.value()
+            sync_sales_period_weeks(self._detail_lookback)
             item = session.scalar(select(Item).where(Item.sku == sku))
             if not item:
                 self._header.set_subtitle("Item not found")
@@ -304,46 +345,40 @@ class ItemDetailPage(QWidget):
             self._item_id = item.id
             self._sku = sku
             data = build_item_summary(
-                session, item.id, None, self._nickname_map, self._lookback_days
+                session, item.id, self._nickname_map, self._lookback_weeks
             )
 
         if not data:
             self._header.set_subtitle("Item not found")
             return
 
-        self._batch_id = data.get("selected_batch_id")
-        self._populate_period_combo(data.get("available_batches", []))
         self._export_title = f"Item History — {data['sku']}"
-        chips = [data["department"], data["supplier"]]
-        if data.get("is_deprecated"):
-            chips.append("Deprecated")
-        if data.get("not_in_turn_report"):
-            chips.append("No turn data")
-        self._header.set_subtitle(
-            f"{data['sku']} — {data['name']}  ·  " + "  ·  ".join(c for c in chips if c and c != "—")
-        )
+        self._set_header_subtitle(data)
+        self._populate_dept_combo(data.get("department_code"))
         self._apply_summary(data)
 
     def _apply_summary(self, data: dict) -> None:
         self._kpi_on_hand.set_value(f"{data['on_hand']:g}")
         self._kpi_value.set_value(f"R {data['stock_value']:,.2f}")
-        self._kpi_sales.set_title(sales_period_label(self._lookback_days))
-        self._kpi_sales.set_value(f"{data['qty_sold']:g}" if data.get("chart_data") else "—")
-        self._kpi_over.set_value(f"{data['over_qty']:g}" if data.get("chart_data") else "—")
-        self._kpi_under.set_value(f"{data['under_qty']:.2f}" if data.get("chart_data") else "—")
+        self._update_lookback_kpi_titles()
+        has_charts = bool(data.get("sales_chart_data") or data.get("stock_chart_data"))
+        self._kpi_sales.set_value(f"{data['qty_sold']:g}" if has_charts else "—")
+        self._kpi_over.set_value(f"{data['over_qty']:g}" if has_charts else "—")
+        self._kpi_under.set_value(f"{data['under_qty']:.2f}" if has_charts else "—")
         abc = data.get("abc_class") or "—"
         self._kpi_abc.set_value(abc)
         accent = {"A": "success", "B": "warning", "C": "amber"}.get(abc)
         self._kpi_abc.set_accent(accent)
 
-        chart_data = data.get("chart_data") or {}
-        if chart_data:
-            sales_view, labels = build_item_sales_chart(chart_data)
+        sales_chart_data = data.get("sales_chart_data") or {}
+        stock_chart_data = data.get("stock_chart_data") or {}
+        if has_charts:
+            sales_view, labels = build_item_sales_chart(sales_chart_data)
             self._sales_chart.set_chart_view(sales_view, labels)
-            self._stock_trend_chart.set_chart_view(build_item_stock_trend_chart(chart_data))
+            self._stock_trend_chart.set_chart_view(build_item_stock_trend_chart(stock_chart_data))
             mix = data.get("sales_mix_pie") or {}
             self._sales_mix_chart.set_chart_view(
-                build_pie_chart(mix, "Sales Mix (selected period)"),
+                build_pie_chart(mix, f"Sales Mix ({lookback_label(self._lookback_weeks)})"),
                 list(mix.keys()),
             )
             pos = data.get("stock_position_pie") or {}
@@ -357,11 +392,12 @@ class ItemDetailPage(QWidget):
                 list(health.keys()),
             )
             self._summary_label.setText(
-                f"Selected period: {data.get('period_label', '—')}\n"
+                f"Stock position: latest import ({data.get('period_label', '—')})\n"
+                f"Sales charts: last {lookback_label(self._lookback_weeks)}\n"
                 f"Total history periods: {len(data.get('history_rows', []))}"
             )
         else:
-            msg = "Import turn reports for item analytics."
+            msg = "Import movement reports for item analytics."
             self._sales_chart.set_chart_view(build_pie_chart({}, msg))
             self._sales_mix_chart.set_chart_view(build_pie_chart({}, msg))
             self._stock_trend_chart.set_chart_view(build_pie_chart({}, msg))
@@ -383,11 +419,9 @@ class InventoryPage(QWidget):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self._selected_batch_id: int | None = None
-        self._batch_ids: list[int] = []
         self._dept_filter: str | None = None
         self._nickname_map: dict[str, str] = {}
-        self._lookback_days = 90
+        self._lookback_weeks = 1
 
         outer = QVBoxLayout(self)
         self._stack = QStackedWidget()
@@ -416,12 +450,7 @@ class InventoryPage(QWidget):
 
         self._list_header = ReportHeader("Inventory", "")
         self._list_header.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
-        self._list_period = QComboBox()
-        self._list_period.setMinimumWidth(200)
-        self._list_period.currentIndexChanged.connect(self._on_list_period_changed)
-        self._list_header.add_control(QLabel("Period:"))
-        self._list_header.add_control(self._list_period)
-        self._list_lookback = create_sales_period_combo(
+        self._list_lookback = create_sales_period_weeks(
             self, on_changed=self._on_list_lookback_changed
         )
         self._list_header.add_control(QLabel("Sales period:"))
@@ -519,6 +548,7 @@ class InventoryPage(QWidget):
         self._status_filter.currentTextChanged.connect(self._schedule_filter)
 
         self._detail = ItemDetailPage()
+        self._detail.department_changed.connect(self._on_item_department_changed)
 
         self._stack.addWidget(self._list_view)
         self._stack.addWidget(self._detail)
@@ -538,15 +568,12 @@ class InventoryPage(QWidget):
         self._table.setTextElideMode(Qt.TextElideMode.ElideRight)
 
     def _on_list_lookback_changed(self) -> None:
-        self._lookback_days = self._list_lookback.currentData() or 90
-        sync_sales_period_combo(self._list_lookback)
-        self._inventory_model.set_lookback_days(self._lookback_days)
+        self._lookback_weeks = self._list_lookback.value()
+        sync_sales_period_weeks(self._list_lookback)
+        self._inventory_model.set_lookback_weeks(self._lookback_weeks)
+        self._inventory_model.reload()
+        self._update_table_subtitle()
         self._refresh_summary()
-
-    def _on_list_period_changed(self, index: int) -> None:
-        if 0 <= index < len(self._batch_ids):
-            self._selected_batch_id = self._batch_ids[index]
-            self._refresh_summary()
 
     def _on_inventory_tab_changed(self, index: int) -> None:
         on_items = index == _ITEMS_TAB
@@ -617,47 +644,28 @@ class InventoryPage(QWidget):
                 self._inventory_model.set_dept_filter(None)
         self._dept_filter_combo.blockSignals(False)
 
-    def _populate_list_period_combo(self, batches: list[dict]) -> None:
-        previous = self._selected_batch_id
-        self._list_period.blockSignals(True)
-        self._list_period.clear()
-        self._batch_ids = []
-        selected = 0
-        for i, batch in enumerate(batches):
-            self._list_period.addItem(batch["label"])
-            self._batch_ids.append(batch["id"])
-            if previous == batch["id"]:
-                selected = i
-        if batches:
-            self._list_period.setCurrentIndex(selected)
-            self._selected_batch_id = self._batch_ids[selected]
-        self._list_period.blockSignals(False)
-
     def _refresh_summary(self) -> None:
         with get_session() as session:
             enriched = has_enrichment(session)
             self._nickname_map = load_nickname_map(session)
-            self._lookback_days = get_lookback_days(session)
-            sync_sales_period_combo(self._list_lookback)
-            summary = build_inventory_list_summary(
-                session,
-                search=self._search.text(),
-                status=self._status_filter.currentText(),
-                batch_id=self._selected_batch_id,
-                has_enrichment=enriched,
-                dept=self._dept_filter,
-                lookback_days=self._lookback_days,
-            )
-            if enriched and self._selected_batch_id:
-                period = get_period_summary_cached(
-                    session, self._selected_batch_id, self._lookback_days
+            self._lookback_weeks = self._list_lookback.value()
+            sync_sales_period_weeks(self._list_lookback)
+            summary = self._inventory_model.last_summary
+            if summary is None:
+                summary = build_inventory_list_summary(
+                    session,
+                    search=self._search.text(),
+                    status=self._status_filter.currentText(),
+                    has_enrichment=enriched,
+                    dept=self._dept_filter,
+                    lookback_weeks=self._lookback_weeks,
                 )
-                update_lookback_tooltip(
-                    self._list_lookback, period.get("lookback_60_source")
-                )
+            if enriched:
+                period = get_period_summary_cached(session, self._lookback_weeks)
                 if period.get("period_start"):
+                    weeks_label = lookback_label(self._lookback_weeks)
                     self._list_header.set_subtitle(
-                        f"{period['period_start']} – {period['period_end']}"
+                        f"Last {weeks_label} · {period['period_start']} – {period['period_end']}"
                     )
 
         self._inv_kpi_count.set_value(f"{summary['item_count']:,}")
@@ -740,6 +748,11 @@ class InventoryPage(QWidget):
         self._detail.show_item(sku)
         self._stack.setCurrentWidget(self._detail)
 
+    def _on_item_department_changed(self) -> None:
+        self._inventory_model.reload()
+        self._update_table_subtitle()
+        self._refresh_summary()
+
     def refresh(self) -> None:
         with get_session() as session:
             if not has_initial_baseline(session):
@@ -747,7 +760,6 @@ class InventoryPage(QWidget):
                 self._scroll.hide()
                 return
             enriched = has_enrichment(session)
-            batches = list_period_batches(session) if enriched else []
             self._nickname_map = load_nickname_map(session)
 
         self._empty.hide()
@@ -755,22 +767,18 @@ class InventoryPage(QWidget):
         self._stack.setCurrentWidget(self._list_view)
 
         if enriched:
-            self._populate_list_period_combo(batches)
-            self._list_period.setVisible(True)
             self._list_lookback.setVisible(True)
             self._detail._detail_lookback.setVisible(True)
             self._inv_dept_chart.setVisible(True)
             self._inv_health_chart.setVisible(True)
         else:
-            self._list_period.setVisible(False)
             self._list_lookback.setVisible(False)
             self._detail._detail_lookback.setVisible(False)
             self._inv_dept_chart.setVisible(False)
             self._inv_health_chart.setVisible(False)
 
         self._inventory_model.set_nickname_map(self._nickname_map)
-        self._inventory_model.set_batch_id(self._selected_batch_id)
-        self._inventory_model.set_lookback_days(self._lookback_days)
+        self._inventory_model.set_lookback_weeks(self._lookback_weeks)
         self._inventory_model.reload()
         self._update_table_subtitle()
         self._refresh_summary()
@@ -781,7 +789,6 @@ class InventoryPage(QWidget):
             dept_filter=self._dept_filter,
             search_text=self._search.text(),
             status_filter=self._status_filter.currentText(),
-            selected_batch_id=self._selected_batch_id,
         )
 
     def restore_nav_state(self, state: object | None, *, needs_refresh: bool = False) -> None:
@@ -792,14 +799,6 @@ class InventoryPage(QWidget):
 
         if not needs_refresh and self.capture_nav_state() == state:
             return
-
-        if state.selected_batch_id != self._selected_batch_id:
-            if state.selected_batch_id in self._batch_ids:
-                period_index = self._batch_ids.index(state.selected_batch_id)
-                self._list_period.blockSignals(True)
-                self._list_period.setCurrentIndex(period_index)
-                self._list_period.blockSignals(False)
-                self._selected_batch_id = state.selected_batch_id
 
         self._dept_filter = state.dept_filter
         self._dept_filter_combo.blockSignals(True)
@@ -838,3 +837,8 @@ class InventoryPage(QWidget):
 
         if state.tab == _OVERVIEW_TAB:
             self._refresh_summary()
+
+    def reset_to_base(self) -> None:
+        self.show_list_view()
+        self._tabs.setCurrentIndex(_OVERVIEW_TAB)
+        self._on_inventory_tab_changed(_OVERVIEW_TAB)

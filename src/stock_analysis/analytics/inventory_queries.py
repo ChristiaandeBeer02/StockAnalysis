@@ -7,27 +7,37 @@ from collections.abc import Iterator
 from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
-from stock_analysis.analytics.dashboard import get_period_lines
+from stock_analysis.analytics.dashboard import (
+    _item_dept,
+    _line_stock_levels,
+    _weekly_under_qty,
+    get_lookback_period_lines,
+)
 from stock_analysis.analytics.department_names import display_dept
-from stock_analysis.analytics.metrics import effective_unit_cost
+from stock_analysis.analytics.metrics import (
+    effective_unit_cost,
+    stock_health_category,
+    stock_value,
+)
 from stock_analysis.analytics.lookback import (
-    DEFAULT_LOOKBACK,
-    build_prior_qty_map,
-    qty_sold,
+    DEFAULT_LOOKBACK_WEEKS,
+    build_multi_batch_qty_map,
+    item_qty_sold,
     sold_column_label,
 )
+from stock_analysis.analytics.queries import get_optimum_stock_months
 from stock_analysis.db.models import BaselineItem, Item, PeriodTurnLine
 from stock_analysis.importers.item_filters import item_status, should_skip_item
 
 
-def inventory_headers(lookback_days: int = DEFAULT_LOOKBACK) -> list[str]:
+def inventory_headers(lookback_weeks: int = DEFAULT_LOOKBACK_WEEKS) -> list[str]:
     return [
         "SKU",
         "Description",
         "Dept",
         "On Hand",
         "Unit Cost",
-        sold_column_label(lookback_days),
+        sold_column_label(lookback_weeks),
         "Status",
     ]
 
@@ -38,13 +48,7 @@ INVENTORY_HEADERS = inventory_headers()
 def _status_clause(status: str, has_enrichment: bool):
     if status == "Deprecated":
         return Item.is_deprecated.is_(True)
-    if status == "No turn data":
-        if not has_enrichment:
-            return Item.id == -1
-        return Item.is_deprecated.is_(False), Item.not_in_turn_report.is_(True)
     if status == "Active":
-        if has_enrichment:
-            return Item.is_deprecated.is_(False), Item.not_in_turn_report.is_(False)
         return Item.is_deprecated.is_(False)
     return None
 
@@ -85,7 +89,30 @@ def _base_query(has_enrichment: bool, search: str, status: str, dept: str | None
     return base_inventory_query(has_enrichment, search, status, dept)
 
 
-def fetch_inventory_rows(
+def _empty_inventory_summary() -> dict:
+    return {
+        "item_count": 0,
+        "total_value": 0.0,
+        "understock_count": 0,
+        "overstock_count": 0,
+        "slow_moving_count": 0,
+        "understock_value": 0.0,
+        "overstock_value": 0.0,
+        "slow_moving_value": 0.0,
+        "dept_values": {},
+        "dept_overstock_values": {},
+        "dept_slow_moving_values": {},
+        "stock_health": {
+            "Understocked": 0,
+            "Overstocked": 0,
+            "Slow Moving": 0,
+            "Healthy": 0,
+            "No movement data": 0,
+        },
+    }
+
+
+def load_inventory_view_data(
     session: Session,
     *,
     search: str,
@@ -93,13 +120,19 @@ def fetch_inventory_rows(
     has_enrichment: bool,
     dept: str | None = None,
     nickname_map: dict[str, str] | None = None,
-    batch_id: int | None = None,
-    lookback_days: int = DEFAULT_LOOKBACK,
-) -> list[list[str]]:
-    lines = get_period_lines(session, batch_id) if has_enrichment else []
+    lookback_weeks: int = DEFAULT_LOOKBACK_WEEKS,
+) -> tuple[list[list[str]], dict]:
+    """Load table rows and overview summary in a single catalog pass."""
+    lines = get_lookback_period_lines(session, lookback_weeks) if has_enrichment else []
     turn_by_item: dict[int, PeriodTurnLine] = {item.id: line for line, item in lines}
-    prior_map, lookback_60_source = build_prior_qty_map(session, batch_id)
-    use_two_period_60 = lookback_days == 60 and lookback_60_source == "two_period"
+    qty_map = build_multi_batch_qty_map(session, lookback_weeks) if has_enrichment else {}
+
+    summary = _empty_inventory_summary()
+    dept_values = summary["dept_values"]
+    dept_overstock_values = summary["dept_overstock_values"]
+    dept_slow_moving_values = summary["dept_slow_moving_values"]
+    health = summary["stock_health"]
+    optimum_months = get_optimum_stock_months(session)
 
     query = _base_query(has_enrichment, search, status, dept)
     rows_db = session.execute(query).all()
@@ -108,20 +141,23 @@ def fetch_inventory_rows(
     for item, baseline in rows_db:
         if should_skip_item(item.sku, item.name):
             continue
+
         turn = turn_by_item.get(item.id)
         unit_cost = effective_unit_cost(turn, item)
         qty = baseline.qty_on_hand
+        value = stock_value(qty, unit_cost)
+        summary["item_count"] += 1
+        summary["total_value"] += value
+        dept_key = _item_dept(turn, item)
+        dept_values[dept_key] = dept_values.get(dept_key, 0) + value
+
         unit_cost_str = f"{unit_cost:.2f}" if unit_cost else "—"
         dept_label = display_dept(item.department or (turn.dept if turn else None), nickname_map)
         if turn:
-            sold = qty_sold(
-                turn,
-                lookback_days,
-                prior_qty_30=prior_map.get(item.id, 0.0),
-                use_two_period_60=use_two_period_60,
-            )
+            sold = item_qty_sold(qty_map, item.id)
             sold_label = f"{sold:g}"
         else:
+            sold = 0.0
             sold_label = "—"
         status_label = item_status(
             is_deprecated=item.is_deprecated,
@@ -140,4 +176,74 @@ def fetch_inventory_rows(
             ]
         )
 
-    return display_rows
+        if not turn:
+            if has_enrichment:
+                health["No movement data"] += 1
+            continue
+
+        over_qty, _ = _line_stock_levels(turn, qty, optimum_months)
+        sold = item_qty_sold(qty_map, item.id)
+        under_qty = _weekly_under_qty(qty, sold, lookback_weeks, optimum_months)
+        category = stock_health_category(
+            under_qty=under_qty, over_qty=over_qty, sold=sold, on_hand=qty
+        )
+        if category == "understocked":
+            summary["understock_count"] += 1
+            summary["understock_value"] += abs(under_qty) * unit_cost
+            health["Understocked"] += 1
+        elif category == "slow_moving":
+            summary["slow_moving_count"] += 1
+            item_slow_value = qty * unit_cost
+            summary["slow_moving_value"] += item_slow_value
+            dept_slow_moving_values[dept_key] = (
+                dept_slow_moving_values.get(dept_key, 0) + item_slow_value
+            )
+            health["Slow Moving"] += 1
+        elif category == "overstocked":
+            summary["overstock_count"] += 1
+            item_over_value = over_qty * unit_cost
+            summary["overstock_value"] += item_over_value
+            dept_overstock_values[dept_key] = (
+                dept_overstock_values.get(dept_key, 0) + item_over_value
+            )
+            health["Overstocked"] += 1
+        elif category == "healthy":
+            health["Healthy"] += 1
+
+    return display_rows, summary
+
+
+def list_item_departments(session: Session, *, status: str = "Active") -> list[str]:
+    query = (
+        select(Item.department)
+        .join(BaselineItem, BaselineItem.item_id == Item.id)
+        .where(Item.department.isnot(None))
+        .distinct()
+        .order_by(Item.department)
+    )
+    clause = _status_clause(status, has_enrichment=True)
+    if clause is not None:
+        query = query.where(clause)
+    return [dept for dept in session.scalars(query).all() if dept]
+
+
+def fetch_inventory_rows(
+    session: Session,
+    *,
+    search: str,
+    status: str,
+    has_enrichment: bool,
+    dept: str | None = None,
+    nickname_map: dict[str, str] | None = None,
+    lookback_weeks: int = DEFAULT_LOOKBACK_WEEKS,
+) -> list[list[str]]:
+    rows, _ = load_inventory_view_data(
+        session,
+        search=search,
+        status=status,
+        has_enrichment=has_enrichment,
+        dept=dept,
+        nickname_map=nickname_map,
+        lookback_weeks=lookback_weeks,
+    )
+    return rows

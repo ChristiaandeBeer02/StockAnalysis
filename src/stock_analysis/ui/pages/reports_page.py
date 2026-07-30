@@ -13,21 +13,26 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from stock_analysis.analytics.dashboard import list_period_batches
+from stock_analysis.analytics.inventory_queries import list_item_departments
 from stock_analysis.analytics.department_names import display_dept, load_nickname_map
-from stock_analysis.analytics.lookback import get_lookback_days, qty_column_label
+from stock_analysis.analytics.lookback import under_qty_label, qty_column_label
 from stock_analysis.analytics.pivot import ROW_FIELDS, build_pivot, value_fields_for_lookback
-from stock_analysis.analytics.reports import abc_report, abc_summary, report_period_label, slow_moving_report
+from stock_analysis.analytics.reports import (
+    abc_report,
+    abc_summary,
+    report_period_label,
+    slow_moving_report,
+    understocked_report,
+)
 from stock_analysis.db.session import get_session, has_enrichment, has_initial_baseline
 from stock_analysis.ui.export_dialog import prompt_export_excel, prompt_export_pdf
 from stock_analysis.ui.widgets.chart_builders import build_abc_chart, build_pie_chart
 from stock_analysis.ui.widgets.chart_tile import ChartTile
 from stock_analysis.ui.widgets.data_table import DataTable
 from stock_analysis.ui.widgets.empty_state import EmptyState
-from stock_analysis.ui.widgets.sales_period_combo import (
-    create_sales_period_combo,
-    sync_sales_period_combo,
-    update_lookback_tooltip,
+from stock_analysis.ui.widgets.sales_period_weeks import (
+    create_sales_period_weeks,
+    sync_sales_period_weeks,
 )
 
 
@@ -50,7 +55,7 @@ class ReportsPage(QWidget):
 
         self._empty = EmptyState(
             "Reports unavailable",
-            "Complete Step 2 (Turn + Turnunder enrichment) to unlock slow-moving, ABC, and pivot reports.",
+            "Complete Step 2 (movement import) to unlock slow-moving, ABC, pivot, and understocked reports.",
         )
         layout.addWidget(self._empty)
 
@@ -59,16 +64,17 @@ class ReportsPage(QWidget):
         content_layout.setContentsMargins(0, 0, 0, 0)
 
         period_row = QHBoxLayout()
-        period_row.addWidget(QLabel("Period:"))
-        self._period_combo = QComboBox()
-        self._period_combo.setMinimumWidth(280)
-        self._period_combo.currentIndexChanged.connect(self._reload_active_tab)
-        period_row.addWidget(self._period_combo)
-        self._lookback_combo = create_sales_period_combo(
+        self._lookback_spin = create_sales_period_weeks(
             self, on_changed=self._reload_active_tab
         )
         period_row.addWidget(QLabel("Sales period:"))
-        period_row.addWidget(self._lookback_combo)
+        period_row.addWidget(self._lookback_spin)
+        period_row.addSpacing(16)
+        self._dept_filter_combo = QComboBox()
+        self._dept_filter_combo.setMinimumWidth(160)
+        self._dept_filter_combo.currentIndexChanged.connect(self._on_dept_filter_changed)
+        period_row.addWidget(QLabel("Department:"))
+        period_row.addWidget(self._dept_filter_combo)
         period_row.addStretch()
         content_layout.addLayout(period_row)
 
@@ -83,6 +89,10 @@ class ReportsPage(QWidget):
         )
         self._abc_chart = ChartTile("ABC Classification")
         self._pivot_table = DataTable()
+        self._understock_table = DataTable()
+        self._understock_table.set_headers(
+            ["SKU", "Name", "Dept", "On Hand", "Under Qty (1w)", "Est. Purchase Cost"]
+        )
 
         slow_tab = QWidget()
         slow_layout = QVBoxLayout(slow_tab)
@@ -117,7 +127,7 @@ class ReportsPage(QWidget):
         self._pivot_row = QComboBox()
         self._pivot_row.addItems(list(ROW_FIELDS.keys()))
         self._pivot_value = QComboBox()
-        self._lookback_days = 90
+        self._lookback_weeks = 1
         self._refresh_pivot_value_options()
         pivot_generate = QPushButton("Generate")
         pivot_generate.clicked.connect(self._load_pivot)
@@ -133,9 +143,23 @@ class ReportsPage(QWidget):
         pivot_layout.addLayout(pivot_controls)
         pivot_layout.addWidget(self._pivot_table)
 
+        understock_tab = QWidget()
+        understock_layout = QVBoxLayout(understock_tab)
+        understock_toolbar = QHBoxLayout()
+        understock_export_xlsx = QPushButton("Export Excel…")
+        understock_export_pdf = QPushButton("Export PDF…")
+        understock_export_xlsx.clicked.connect(lambda: self._export_understock("excel"))
+        understock_export_pdf.clicked.connect(lambda: self._export_understock("pdf"))
+        understock_toolbar.addStretch()
+        understock_toolbar.addWidget(understock_export_xlsx)
+        understock_toolbar.addWidget(understock_export_pdf)
+        understock_layout.addLayout(understock_toolbar)
+        understock_layout.addWidget(self._understock_table)
+
         self._tabs.addTab(slow_tab, "Slow Moving")
         self._tabs.addTab(abc_tab, "ABC Analysis")
         self._tabs.addTab(pivot_tab, "Pivot")
+        self._tabs.addTab(understock_tab, "Understocked")
         self._tabs.currentChanged.connect(self._reload_active_tab)
         content_layout.addWidget(self._tabs)
 
@@ -146,8 +170,42 @@ class ReportsPage(QWidget):
         self._abc_rows: list[list] = []
         self._pivot_headers: list[str] = []
         self._pivot_rows: list[list] = []
-        self._batch_ids: list[int | None] = []
+        self._understock_rows: list[list] = []
         self._nickname_map: dict[str, str] = {}
+        self._dept_filter: str | None = None
+
+    def _populate_dept_combo(self, departments: list[str]) -> None:
+        current = self._dept_filter
+        self._dept_filter_combo.blockSignals(True)
+        self._dept_filter_combo.clear()
+        self._dept_filter_combo.addItem("All departments", None)
+        for dept in sorted(departments):
+            self._dept_filter_combo.addItem(display_dept(dept, self._nickname_map), dept)
+        if current is None:
+            self._dept_filter_combo.setCurrentIndex(0)
+        else:
+            index = self._dept_filter_combo.findData(current)
+            if index >= 0:
+                self._dept_filter_combo.setCurrentIndex(index)
+            else:
+                self._dept_filter_combo.setCurrentIndex(0)
+                self._dept_filter = None
+        self._dept_filter_combo.blockSignals(False)
+
+    def _refresh_dept_combo(self) -> None:
+        with get_session() as session:
+            self._nickname_map = load_nickname_map(session)
+            departments = list_item_departments(session)
+        self._populate_dept_combo(departments)
+
+    def _on_dept_filter_changed(self, _index: int) -> None:
+        self._dept_filter = self._dept_filter_combo.currentData()
+        self._reload_active_tab()
+
+    def _export_title_suffix(self) -> str:
+        if not self._dept_filter:
+            return ""
+        return f" · Dept: {display_dept(self._dept_filter, self._nickname_map)}"
 
     def _configure_slow_table_columns(self) -> None:
         header = self._slow_table.horizontalHeader()
@@ -172,15 +230,20 @@ class ReportsPage(QWidget):
         header.resizeSection(5, 64)
         header.resizeSection(6, 100)
 
-    def _selected_batch_id(self) -> int | None:
-        index = self._period_combo.currentIndex()
-        if index < 0 or index >= len(self._batch_ids):
-            return None
-        return self._batch_ids[index]
+    def _configure_understock_table_columns(self) -> None:
+        header = self._understock_table.horizontalHeader()
+        header.setStretchLastSection(False)
+        header.setSectionResizeMode(QHeaderView.ResizeMode.Fixed)
+        header.setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
+        header.resizeSection(0, 100)
+        header.resizeSection(2, 72)
+        header.resizeSection(3, 80)
+        header.resizeSection(4, 100)
+        header.resizeSection(5, 120)
 
     def _refresh_pivot_value_options(self) -> None:
         current = self._pivot_value.currentText()
-        fields = value_fields_for_lookback(self._lookback_days)
+        fields = value_fields_for_lookback(self._lookback_weeks)
         self._pivot_value.blockSignals(True)
         self._pivot_value.clear()
         self._pivot_value.addItems(list(fields.keys()))
@@ -189,23 +252,30 @@ class ReportsPage(QWidget):
             self._pivot_value.setCurrentIndex(index)
         self._pivot_value.blockSignals(False)
 
-    def _current_lookback_days(self) -> int:
-        with get_session() as session:
-            return get_lookback_days(session)
-
     def _reload_active_tab(self) -> None:
-        self._lookback_days = self._current_lookback_days()
-        sync_sales_period_combo(self._lookback_combo)
+        self._lookback_weeks = self._lookback_spin.value()
+        sync_sales_period_weeks(self._lookback_spin)
         self._refresh_pivot_value_options()
+        self._refresh_dept_combo()
         self._abc_table.set_headers(
             [
                 "SKU",
                 "Name",
                 "Dept",
-                qty_column_label(self._lookback_days),
+                qty_column_label(self._lookback_weeks),
                 "Sales Value",
                 "ABC",
                 "Cumulative %",
+            ]
+        )
+        self._understock_table.set_headers(
+            [
+                "SKU",
+                "Name",
+                "Dept",
+                "On Hand",
+                under_qty_label(self._lookback_weeks),
+                "Est. Purchase Cost",
             ]
         )
         tab = self._tabs.currentIndex()
@@ -215,19 +285,15 @@ class ReportsPage(QWidget):
             self._load_abc()
         elif tab == 2:
             self._load_pivot()
+        elif tab == 3:
+            self._load_understocked()
 
     def _load_slow_moving(self) -> None:
         with get_session() as session:
             self._nickname_map = load_nickname_map(session)
-            lookback_days = get_lookback_days(session)
-            report = slow_moving_report(session, self._selected_batch_id(), lookback_days)
-            if self._selected_batch_id():
-                from stock_analysis.analytics.cache import get_period_summary_cached
-
-                period = get_period_summary_cached(
-                    session, self._selected_batch_id(), lookback_days
-                )
-                update_lookback_tooltip(self._lookback_combo, period.get("lookback_60_source"))
+            report = slow_moving_report(
+                session, self._lookback_weeks, dept_filter=self._dept_filter
+            )
         self._slow_rows = [
             [
                 row["sku"],
@@ -245,21 +311,12 @@ class ReportsPage(QWidget):
     def _load_abc(self) -> None:
         with get_session() as session:
             self._nickname_map = load_nickname_map(session)
-            lookback_days = get_lookback_days(session)
-            report = abc_report(session, self._selected_batch_id(), lookback_days)
-            summary = abc_summary(
-                session,
-                self._selected_batch_id(),
-                report=report,
-                lookback_days=lookback_days,
+            report = abc_report(
+                session, self._lookback_weeks, dept_filter=self._dept_filter
             )
-            if self._selected_batch_id():
-                from stock_analysis.analytics.cache import get_period_summary_cached
-
-                period = get_period_summary_cached(
-                    session, self._selected_batch_id(), lookback_days
-                )
-                update_lookback_tooltip(self._lookback_combo, period.get("lookback_60_source"))
+            summary = abc_summary(
+                session, report=report, lookback_weeks=self._lookback_weeks
+            )
         self._abc_rows = [
             [
                 row["sku"],
@@ -282,14 +339,13 @@ class ReportsPage(QWidget):
     def _load_pivot(self) -> None:
         with get_session() as session:
             self._nickname_map = load_nickname_map(session)
-            lookback_days = get_lookback_days(session)
             headers, rows = build_pivot(
                 session,
                 self._pivot_row.currentText(),
                 self._pivot_value.currentText(),
-                self._selected_batch_id(),
                 self._nickname_map,
-                lookback_days,
+                self._lookback_weeks,
+                dept_filter=self._dept_filter,
             )
         self._pivot_headers = headers
         self._pivot_rows = rows
@@ -299,10 +355,33 @@ class ReportsPage(QWidget):
         else:
             self._pivot_table.clear_data()
 
+    def _load_understocked(self) -> None:
+        with get_session() as session:
+            self._nickname_map = load_nickname_map(session)
+            report = understocked_report(
+                session, self._lookback_weeks, dept_filter=self._dept_filter
+            )
+        self._understock_rows = [
+            [
+                row["sku"],
+                row["name"],
+                display_dept(row["dept"], self._nickname_map),
+                f"{row['on_hand']:g}",
+                f"{row['units_under']:.0f}",
+                f"R {row['purchase_cost']:,.2f}",
+            ]
+            for row in report
+        ]
+        self._understock_table.set_rows(self._understock_rows)
+        self._configure_understock_table_columns()
+
     def _export_slow(self, fmt: str) -> None:
         headers = ["SKU", "Name", "Dept", "On Hand", "Unit Cost", "Stock Value"]
         with get_session() as session:
-            title = f"Slow Moving Report — {report_period_label(session, self._selected_batch_id())}"
+            title = (
+                f"Slow Moving Report — {report_period_label(session, self._lookback_weeks)}"
+                f"{self._export_title_suffix()}"
+            )
         if fmt == "excel":
             prompt_export_excel(self, title, headers, self._slow_rows, "slow_moving.xlsx")
         else:
@@ -313,13 +392,16 @@ class ReportsPage(QWidget):
             "SKU",
             "Name",
             "Dept",
-            qty_column_label(self._lookback_days),
+            qty_column_label(self._lookback_weeks),
             "Sales Value",
             "ABC",
             "Cumulative %",
         ]
         with get_session() as session:
-            title = f"ABC Report — {report_period_label(session, self._selected_batch_id())}"
+            title = (
+                f"ABC Report — {report_period_label(session, self._lookback_weeks)}"
+                f"{self._export_title_suffix()}"
+            )
         if fmt == "excel":
             prompt_export_excel(self, title, headers, self._abc_rows, "abc_report.xlsx")
         else:
@@ -331,14 +413,39 @@ class ReportsPage(QWidget):
         if not self._pivot_headers:
             return
         with get_session() as session:
-            title = f"Pivot — {report_period_label(session, self._selected_batch_id())}"
+            title = (
+                f"Pivot — {report_period_label(session, self._lookback_weeks)}"
+                f"{self._export_title_suffix()}"
+            )
         prompt_export_excel(self, title, self._pivot_headers, self._pivot_rows, "pivot.xlsx")
+
+    def _export_understock(self, fmt: str) -> None:
+        headers = [
+            "SKU",
+            "Name",
+            "Dept",
+            "On Hand",
+            under_qty_label(self._lookback_weeks),
+            "Est. Purchase Cost",
+        ]
+        with get_session() as session:
+            title = (
+                f"Understocked Report — {report_period_label(session, self._lookback_weeks)}"
+                f"{self._export_title_suffix()}"
+            )
+        if fmt == "excel":
+            prompt_export_excel(
+                self, title, headers, self._understock_rows, "understocked.xlsx"
+            )
+        else:
+            prompt_export_pdf(
+                self, title, headers, self._understock_rows, "understocked.pdf"
+            )
 
     def refresh(self) -> None:
         with get_session() as session:
             has_initial = has_initial_baseline(session)
             enriched = has_enrichment(session)
-            batches = list_period_batches(session) if enriched else []
 
         if not has_initial or not enriched:
             self._empty.show()
@@ -348,22 +455,15 @@ class ReportsPage(QWidget):
         self._empty.hide()
         self._content.show()
 
-        current_batch = self._selected_batch_id()
-        self._period_combo.blockSignals(True)
-        self._period_combo.clear()
-        self._batch_ids = []
-        selected_index = 0
-        for index, batch in enumerate(batches):
-            self._period_combo.addItem(batch["label"])
-            self._batch_ids.append(batch["id"])
-            if current_batch == batch["id"]:
-                selected_index = index
-        if batches:
-            self._period_combo.setCurrentIndex(selected_index)
-        self._period_combo.blockSignals(False)
-        sync_sales_period_combo(self._lookback_combo)
-        self._lookback_days = self._current_lookback_days()
+        sync_sales_period_weeks(self._lookback_spin)
+        self._lookback_weeks = self._lookback_spin.value()
         self._refresh_pivot_value_options()
+        self._refresh_dept_combo()
 
         if self._tabs.currentIndex() >= 0:
             self._reload_active_tab()
+
+    def reset_to_base(self) -> None:
+        self._tabs.setCurrentIndex(0)
+        self._dept_filter = None
+        self._dept_filter_combo.setCurrentIndex(0)

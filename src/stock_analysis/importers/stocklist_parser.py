@@ -1,0 +1,91 @@
+"""Parser for IQ Retail Stocklist exports (department assignment)."""
+
+from __future__ import annotations
+
+import csv
+from dataclasses import dataclass
+from pathlib import Path
+
+from stock_analysis.importers.item_filters import should_skip_item
+
+
+@dataclass
+class StocklistRow:
+    code: str
+    description: str
+    department: str
+
+
+@dataclass
+class StocklistParseStats:
+    total_rows: int
+    junk_rows: int
+    eligible_rows: int
+
+
+@dataclass
+class StocklistParseResult:
+    rows: list[StocklistRow]
+    stats: StocklistParseStats
+
+
+def _read_csv_dicts(path: Path) -> list[dict[str, str]]:
+    for encoding in ("utf-8-sig", "latin-1", "cp1252"):
+        try:
+            with path.open(newline="", encoding=encoding) as handle:
+                return list(csv.DictReader(handle))
+        except UnicodeDecodeError:
+            continue
+    with path.open(newline="", encoding="latin-1", errors="replace") as handle:
+        return list(csv.DictReader(handle))
+
+
+def _field(row: dict[str, str], *names: str) -> str:
+    for name in names:
+        if name in row and row[name] is not None:
+            return str(row[name]).strip()
+    return ""
+
+
+def _has_column(rows: list[dict[str, str]], *names: str) -> bool:
+    if not rows:
+        return False
+    keys = set(rows[0].keys())
+    return any(name in keys for name in names)
+
+
+def parse_stocklist_file(path: Path) -> StocklistParseResult:
+    raw_rows = _read_csv_dicts(path)
+    if not raw_rows:
+        raise ValueError("Stocklist file is empty.")
+
+    if not _has_column(raw_rows, "CODE", "Code"):
+        raise ValueError("Stocklist file is missing required CODE column.")
+    if not _has_column(raw_rows, "SUBDEPARTM", "SubDepartm"):
+        raise ValueError("Stocklist file is missing required SUBDEPARTM column.")
+
+    parsed: list[StocklistRow] = []
+    junk_rows = 0
+    for raw in raw_rows:
+        code = _field(raw, "CODE", "Code")
+        description = _field(raw, "DESCRIPT", "Descript", "Description")
+        if should_skip_item(code, description):
+            junk_rows += 1
+            continue
+        department = _field(raw, "SUBDEPARTM", "SubDepartm")
+        parsed.append(
+            StocklistRow(
+                code=code,
+                description=description,
+                department=department,
+            )
+        )
+
+    return StocklistParseResult(
+        rows=parsed,
+        stats=StocklistParseStats(
+            total_rows=len(raw_rows),
+            junk_rows=junk_rows,
+            eligible_rows=len(parsed),
+        ),
+    )

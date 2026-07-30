@@ -13,7 +13,6 @@ class KpiCard(QFrame):
         self.setFrameShape(QFrame.Shape.StyledPanel)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
         self._filter_key = filter_key
-        self._selected = False
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(16, 12, 16, 12)
@@ -56,12 +55,6 @@ class KpiCard(QFrame):
 
     def set_accent(self, accent: str | None) -> None:
         self.setProperty("accent", accent or "")
-        self.style().unpolish(self)
-        self.style().polish(self)
-
-    def set_selected(self, selected: bool) -> None:
-        self._selected = selected
-        self.setProperty("selected", "true" if selected else "false")
         self.style().unpolish(self)
         self.style().polish(self)
 

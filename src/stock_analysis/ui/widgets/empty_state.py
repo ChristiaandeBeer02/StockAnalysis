@@ -36,7 +36,3 @@ class EmptyState(QWidget):
             layout.addWidget(self._action)
 
         layout.addStretch()
-
-    def set_action_enabled(self, enabled: bool) -> None:
-        if self._action:
-            self._action.setEnabled(enabled)

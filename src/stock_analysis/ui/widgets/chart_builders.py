@@ -10,7 +10,6 @@ from PySide6.QtCharts import (
     QBarSet,
     QChart,
     QChartView,
-    QHorizontalBarSeries,
     QLineSeries,
     QPieSeries,
     QPieSlice,
@@ -32,6 +31,11 @@ PBI_COLORS = [
     "#D9B300",
     "#107C10",
 ]
+
+# Match kpiCard accent colors in app.py for Home Overview dept chart series.
+DEPT_CHART_TOTAL_COLOR = "#118DFF"
+DEPT_CHART_OVERSTOCK_COLOR = "#E66C37"
+DEPT_CHART_SLOW_MOVING_COLOR = "#D9B300"
 
 # Slices below this share of total hide callout labels (still appear in legend).
 PIE_CALLOUT_MIN_PCT = 8.0
@@ -90,18 +94,42 @@ def _chart_view(chart: QChart) -> QChartView:
 def build_dept_values_chart(
     dept_values: dict[str, float],
     nickname_map: dict[str, str] | None = None,
+    *,
+    overstock_values: dict[str, float] | None = None,
+    slow_moving_values: dict[str, float] | None = None,
 ) -> tuple[QChartView, list[str]]:
     if not dept_values:
         return _empty_chart("No department data"), []
     sorted_depts = sorted(dept_values.items(), key=lambda x: x[1], reverse=True)[:10]
     raw_codes = [d[0] for d in sorted_depts]
     labels = [display_dept(code, nickname_map) for code in raw_codes] if nickname_map else raw_codes
-    max_val = max(value for _, value in sorted_depts)
-    bar_set = QBarSet("Value")
-    bar_set.setColor(_color(0))
-    bar_set.append([d[1] for d in sorted_depts])
+    multi_series = overstock_values is not None and slow_moving_values is not None
+    if multi_series:
+        overstock_values = overstock_values or {}
+        slow_moving_values = slow_moving_values or {}
+        series_defs = (
+            ("Total Value", [d[1] for d in sorted_depts], DEPT_CHART_TOTAL_COLOR),
+            (
+                "Total Overstock",
+                [overstock_values.get(code, 0.0) for code in raw_codes],
+                DEPT_CHART_OVERSTOCK_COLOR,
+            ),
+            (
+                "Total Slow Moving",
+                [slow_moving_values.get(code, 0.0) for code in raw_codes],
+                DEPT_CHART_SLOW_MOVING_COLOR,
+            ),
+        )
+        max_val = max(value for _, values, _ in series_defs for value in values)
+    else:
+        max_val = max(value for _, value in sorted_depts)
+        series_defs = (("Value", [d[1] for d in sorted_depts], _color(0)),)
     series = QBarSeries()
-    series.append(bar_set)
+    for name, values, color in series_defs:
+        bar_set = QBarSet(name)
+        bar_set.setColor(QColor(color))
+        bar_set.append(values)
+        series.append(bar_set)
     chart = QChart()
     chart.addSeries(series)
     tick_count = 5
@@ -121,39 +149,12 @@ def build_dept_values_chart(
     series.attachAxis(axis_x)
     series.attachAxis(axis_y)
     view = _chart_view(chart)
-    chart.legend().setVisible(False)
+    chart.legend().setVisible(multi_series)
     # Qt Charts already reserves space for Y-axis labels; extra left margin double-books it.
     chart.setMargins(QMargins(4, 4, 4, 8))
     view.setMinimumSize(0, 0)
     return view, raw_codes
 
-
-def build_top_sellers_chart(
-    top_sellers: list[dict],
-    lookback_days: int = 90,
-) -> tuple[QChartView, list[str]]:
-    if not top_sellers:
-        return _empty_chart("No seller data"), []
-    from stock_analysis.analytics.lookback import qty_column_label
-
-    items = list(reversed(top_sellers))
-    labels = [s["code"] for s in items]
-    names = [s["name"][:25] for s in items]
-    bar_set = QBarSet(qty_column_label(lookback_days))
-    bar_set.setColor(_color(1))
-    bar_set.append([s["qty_sold"] for s in items])
-    series = QHorizontalBarSeries()
-    series.append(bar_set)
-    chart = QChart()
-    chart.addSeries(series)
-    axis_y = QBarCategoryAxis()
-    axis_y.append(names)
-    axis_x = QValueAxis()
-    chart.addAxis(axis_y, Qt.AlignmentFlag.AlignLeft)
-    chart.addAxis(axis_x, Qt.AlignmentFlag.AlignBottom)
-    series.attachAxis(axis_y)
-    series.attachAxis(axis_x)
-    return _chart_view(chart), labels
 
 
 def _configure_pie_slices(
@@ -235,27 +236,19 @@ def build_stock_health_chart(breakdown: dict[str, int], *, embedded: bool = Fals
 
 def build_item_sales_chart(chart_data: dict) -> tuple[QChartView, list[str]]:
     labels = chart_data.get("labels", [])
+    qty_sold = chart_data.get("qty_sold", [])
+    period_keys = chart_data.get("period_keys", labels)
     if not labels:
         return _empty_chart("No period history"), []
-    max_val = max(
-        (
-            value
-            for key in ("qty_30", "qty_90", "qty_180")
-            for value in chart_data.get(key, [])
-        ),
-        default=0.0,
-    )
+    max_val = max(qty_sold, default=0.0)
     tick_count = 5
     nice_max = _nice_axis_max(max_val, tick_count=tick_count)
     chart = QChart()
     series = QBarSeries()
-    for i, (name, key) in enumerate(
-        (("30d", "qty_30"), ("90d", "qty_90"), ("180d", "qty_180"))
-    ):
-        bar_set = QBarSet(name)
-        bar_set.setColor(_color(i))
-        bar_set.append(chart_data.get(key, []))
-        series.append(bar_set)
+    bar_set = QBarSet("Qty Sold")
+    bar_set.setColor(_color(1))
+    bar_set.append(qty_sold)
+    series.append(bar_set)
     chart.addSeries(series)
     axis_x = QBarCategoryAxis()
     axis_x.append(labels)
@@ -268,7 +261,11 @@ def build_item_sales_chart(chart_data: dict) -> tuple[QChartView, list[str]]:
     chart.addAxis(axis_y, Qt.AlignmentFlag.AlignLeft)
     series.attachAxis(axis_x)
     series.attachAxis(axis_y)
-    return _chart_view(chart), labels
+    chart.legend().setVisible(False)
+    chart.setMargins(QMargins(4, 4, 4, 36))
+    view = _chart_view(chart)
+    chart.legend().setVisible(False)
+    return view, period_keys
 
 
 def build_item_stock_trend_chart(chart_data: dict) -> QChartView:

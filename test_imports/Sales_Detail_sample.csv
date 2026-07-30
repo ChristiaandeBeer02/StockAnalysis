@@ -1,0 +1,5 @@
+"CODE","DEPARTMENT","MAINITEM","Descript","AvrgCost","GenCode","PurchaseOr","OnHand","Regular_SU","SalesOrder","WIPQty","LBOnhand","Subdepartm","Category","Range","Cycle","Sales","SalesQty","SalesCost","Refunds","RefundsQty","RefundsCost","NettSales","NettSalesQuantity","NettCost","Profit","Purchases","Returns","VAT"
+"BASE001","249","","Widget Alpha Test Item*1/1/26",5.00,"",0.00,10.00,"",0.00,0.00,0.00,"A1","","CAT001","",10.00,2.00,10.00,0.00,0.00,0.00,10.00,2.00,10.00,0.00,0.00,0.00,0.00
+"BASE002","249","","Widget Beta Test Item*1/1/26",5.00,"",0.00,5.00,"",0.00,0.00,0.00,"A1","","CAT001","",25.00,5.00,25.00,0.00,0.00,0.00,25.00,5.00,25.00,0.00,0.00,0.00,0.00
+"BASE004","249","","Widget Delta Fast Seller*1/1/26",5.00,"",0.00,20.00,"",0.00,0.00,0.00,"A1","","CAT001","",50.00,10.00,50.00,0.00,0.00,0.00,50.00,10.00,50.00,0.00,0.00,0.00,0.00
+"MOVE001","249","","Movement Only New Item*1/1/26",12.00,"",0.00,0.00,"",0.00,0.00,0.00,"B1","","CAT001","",0.00,0.00,0.00,0.00,0.00,0.00,0.00,0.00,0.00,0.00,0.00,0.00,0.00

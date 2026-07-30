@@ -16,84 +16,57 @@ from stock_analysis.db.models import AppState, Base, BaselineItem, Item, PeriodT
 from stock_analysis.db.session import has_enrichment
 
 FIXTURES_DIR = Path(__file__).resolve().parents[2] / "test_imports"
-
-
-def build_turn_row(
-    *,
-    dept: str,
-    supplier: str,
-    code: str,
-    description: str,
-    on_hand: float,
-    qty_30: float = 0.0,
-    qty_90: float = 0.0,
-    qty_180: float = 0.0,
-    avg_3mo: float = 0.0,
-    avg_6mo: float = 0.0,
-    last_unit_cost: float = 0.0,
-    over_qty_3mo: float = 0.0,
-    over_qty_6mo: float = 0.0,
-    over_value_3mo: float = 0.0,
-    over_value_6mo: float = 0.0,
-) -> str:
-    parts = [""] * 38
-    parts[0] = dept
-    parts[2] = supplier
-    parts[3] = code
-    parts[4] = description
-    parts[5] = f"{on_hand:.2f}"
-    parts[10] = f"{qty_30:.2f}"
-    parts[14] = f"{qty_90:.2f}"
-    parts[15] = f"{qty_180:.2f}"
-    parts[17] = f"{avg_3mo:.2f}"
-    parts[18] = f"{avg_6mo:.2f}"
-    parts[28] = f"{last_unit_cost:.2f}"
-    parts[31] = f"{over_qty_3mo:.2f}"
-    parts[32] = f"{over_qty_6mo:.2f}"
-    parts[33] = f"{over_value_3mo:.2f}"
-    parts[37] = f"{over_value_6mo:.2f}"
-    return ",".join(parts)
-
-
-def build_under_row(
-    *,
-    dept: str,
-    supplier: str,
-    code: str,
-    description: str,
-    on_hand: float,
-    qty_30: float = 0.0,
-    qty_90: float = 0.0,
-    qty_180: float = 0.0,
-    avg_3mo: float = 0.0,
-    avg_6mo: float = 0.0,
-    last_unit_cost: float = 0.0,
-    under_qty_3mo: float = 0.0,
-    under_qty_6mo: float = 0.0,
-    under_value_3mo: float = 0.0,
-    under_value_6mo: float = 0.0,
-) -> str:
-    parts = [""] * 36
-    parts[0] = dept
-    parts[2] = supplier
-    parts[3] = code
-    parts[4] = description
-    parts[5] = f"{on_hand:.2f}"
-    parts[10] = f"{qty_30:.2f}"
-    parts[13] = f"{qty_90:.2f}"
-    parts[14] = f"{qty_180:.2f}"
-    parts[16] = f"{avg_3mo:.2f}"
-    parts[17] = f"{avg_6mo:.2f}"
-    parts[26] = f"{last_unit_cost:.2f}"
-    parts[29] = f"{under_qty_3mo:.2f}"
-    parts[30] = f"{under_qty_6mo:.2f}"
-    parts[31] = f"{under_value_3mo:.2f}"
-    parts[35] = f"{under_value_6mo:.2f}"
-    return ",".join(parts)
+MOVEMENT_PERIOD_START = "01/01/2026"
+MOVEMENT_PERIOD_END = "31/01/2026"
 
 
 def build_stockholding_row(code: str, description: str, on_hand: float, stock_value: float) -> str:
     return f"{code},,{description},,,,,,,,{on_hand:.2f},,,R{stock_value:.2f},,"
+
+
+def build_sales_detail_row(
+    code: str,
+    description: str,
+    *,
+    subdepartm: str = "",
+    department: str = "249",
+    avg_cost: float = 5.0,
+    on_hand: float = 0.0,
+    sales_qty: float = 0.0,
+    refunds_qty: float = 0.0,
+    net_sales_qty: float | None = None,
+) -> str:
+    net = net_sales_qty if net_sales_qty is not None else sales_qty - refunds_qty
+    sales_cost = sales_qty * avg_cost
+    net_cost = net * avg_cost
+    return (
+        f'"{code}","{department}","","{description}",{avg_cost:.2f},"",0.00,{on_hand:.2f},'
+        f'"",0.00,0.00,0.00,"{subdepartm}","","CAT001","",{sales_cost:.2f},{sales_qty:.2f},'
+        f'{sales_cost:.2f},0.00,0.00,0.00,{net * avg_cost:.2f},{net:.2f},{net_cost:.2f},'
+        f'0.00,0.00,0.00,0.00'
+    )
+
+
+def build_purchases_row(
+    code: str,
+    *,
+    department: str = "A1",
+    sales_qty: float = 0.0,
+    refunds_qty: float = 0.0,
+    purchases_qty: float = 0.0,
+    returns_qty: float = 0.0,
+    avg_cost: float = 5.0,
+) -> str:
+    sales_cost = sales_qty * avg_cost
+    net_sales = sales_qty - refunds_qty
+    net_cost = net_sales * avg_cost
+    net_purchases = purchases_qty * avg_cost
+    return (
+        f'"{code}","{department}","",{net_sales * avg_cost:.2f},{sales_qty:.2f},{sales_cost:.2f},'
+        f'0.00,{refunds_qty:.2f},0.00,{net_sales * avg_cost:.2f},{net_cost:.2f},0.00,'
+        f'{net_purchases:.2f},0.00,{purchases_qty:.2f},{returns_qty:.2f},'
+        f'{net_purchases:.2f},0.00,0.00'
+    )
 
 
 def write_fixture_csvs(target_dir: Path | None = None) -> None:
@@ -122,154 +95,77 @@ def write_fixture_csvs(target_dir: Path | None = None) -> None:
         "Totals:,,58.00,,,,,,,R300.00,,",
     ]
 
-    turn_header = [
-        "Manta DIY (Pty) Ltd,,,,,,,,,,Date Printed: 01/01/2026,,,,,,,,,,1 of 1",
-        "",
-        "Stock Turn Report - Over Stocking,,,,,,,",
-        "",
-        "Report Parameters,,,,,,,,,,,,",
-        "",
-        "Period: 01/01/2026 to 31/01/2026,",
-        "",
-        "Optimum Stock Holding In Months:,,,,,,,,,,2.00,,,,,",
-        ",,,,,",
-        "Sort Order:,,,,,,,,Department,,,,",
-        "",
-        "Qty Sold (Days),,,,,,,,Ave Monthly Sales,,,,,,,Stock Days on Hand,,,,,,Over Stock Quantity ,,,,,,,Over Stock Value ,,,,,,,,,",
-        ",,,,,,,,,,,,,,,,,,,,,Last UnitCost,,,,,,,,,,,,,,,,,,",
-        ",,",
-        "Dept,,Supplier,Code,Description,On Hand,,,,,Last 30,,,,,Last 90,Last 180,,3 Months,6 Months,,,,,,3 Months,,6 Months,,,,,3 Months,6 Months,3 Months,,,,6 Months,,,",
-        "",
-        ",,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,",
-    ]
-    turn_data = [
-        build_turn_row(
-            dept="A1",
-            supplier="S001",
-            code="BASE001",
-            description="Widget Alpha Test Item*1/1/26",
+    sales_header = (
+        '"CODE","DEPARTMENT","MAINITEM","Descript","AvrgCost","GenCode","PurchaseOr","OnHand",'
+        '"Regular_SU","SalesOrder","WIPQty","LBOnhand","Subdepartm","Category","Range","Cycle",'
+        '"Sales","SalesQty","SalesCost","Refunds","RefundsQty","RefundsCost","NettSales",'
+        '"NettSalesQuantity","NettCost","Profit","Purchases","Returns","VAT"'
+    )
+    sales_rows = [
+        build_sales_detail_row(
+            "BASE001",
+            "Widget Alpha Test Item*1/1/26",
+            subdepartm="A1",
+            avg_cost=5.0,
             on_hand=10.0,
-            last_unit_cost=5.50,
-            over_qty_3mo=5.0,
-            over_qty_6mo=4.0,
-            over_value_3mo=27.50,
-            over_value_6mo=22.00,
+            sales_qty=2.0,
+            net_sales_qty=2.0,
         ),
-        build_turn_row(
-            dept="A1",
-            supplier="S001",
-            code="BASE002",
-            description="Widget Beta Test Item*1/1/26",
+        build_sales_detail_row(
+            "BASE002",
+            "Widget Beta Test Item*1/1/26",
+            subdepartm="A1",
+            avg_cost=5.0,
             on_hand=5.0,
-            qty_90=12.0,
-            avg_3mo=4.0,
-            last_unit_cost=5.00,
+            sales_qty=5.0,
+            net_sales_qty=5.0,
         ),
-        build_turn_row(
-            dept="A1",
-            supplier="S002",
-            code="BASE004",
-            description="Widget Delta Fast Seller*1/1/26",
+        build_sales_detail_row(
+            "BASE004",
+            "Widget Delta Fast Seller*1/1/26",
+            subdepartm="A1",
+            avg_cost=5.0,
             on_hand=20.0,
-            qty_30=35.0,
-            qty_90=100.0,
-            qty_180=150.0,
-            avg_3mo=33.33,
-            avg_6mo=25.0,
-            last_unit_cost=5.00,
+            sales_qty=10.0,
+            net_sales_qty=10.0,
         ),
-        build_turn_row(
-            dept="B1",
-            supplier="S003",
-            code="BASE005",
-            description="Widget Epsilon Slow Mover*1/1/26",
-            on_hand=15.0,
-            last_unit_cost=5.00,
-            over_qty_3mo=15.0,
-            over_qty_6mo=15.0,
-            over_value_3mo=75.00,
-            over_value_6mo=75.00,
-        ),
-        build_turn_row(
-            dept="B1",
-            supplier="S004",
-            code="TURN001",
-            description="Turn Only New Item*1/1/26",
-            on_hand=3.0,
-            qty_90=6.0,
-            last_unit_cost=12.00,
+        build_sales_detail_row(
+            "MOVE001",
+            "Movement Only New Item*1/1/26",
+            subdepartm="B1",
+            avg_cost=12.0,
+            on_hand=0.0,
+            sales_qty=0.0,
+            net_sales_qty=0.0,
         ),
     ]
 
-    under_header = [
-        "Manta DIY (Pty) Ltd,,,,,,,,,,Date Printed: 01/01/2026,,,,,,,,1 of 1",
-        "",
-        "Stock Turn Report - Under Stocking,,,,,,,",
-        "",
-        "Report Parameters,,,,,,,,,,",
-        "",
-        "Period: 01/01/2026 to 31/01/2026,",
-        "",
-        "Optimum Stock Holding In Months:,,,,,,,,,2.00,,,,",
-        ",,,,",
-        "Sort Order:,,,,,,,Department,,,",
-        "",
-        "Qty Sold (Days),,,,,,,Ave Monthly Sales,,,,,,Stock Days on Hand,,,,,,Under Stock Quantity ,,,,,,,Under Stock Value ,,,,,,,,,",
-        ",,,,,,,,,,,,,,,,,,,,Last UnitCost,,,,,,,,,,,,,,,,,,",
-        ",,",
-        "Dept,,Supplier,Code,Description,On Hand,,,,Last 30,,,,Last 90,Last 180,,3 Months,6 Months,,,,,3 Months,,6 Months,,,,,3 Months,6 Months,3 Months,,,,6 Months,,,",
-        "",
-        ",,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,",
-    ]
-    under_data = [
-        build_under_row(
-            dept="A1",
-            supplier="S001",
-            code="BASE002",
-            description="Widget Beta Test Item*1/1/26",
-            on_hand=5.0,
-            qty_90=12.0,
-            avg_3mo=4.0,
-            last_unit_cost=5.00,
-            under_qty_3mo=-3.0,
-            under_qty_6mo=-2.0,
-            under_value_3mo=-15.00,
-            under_value_6mo=-10.00,
+    purchases_header = (
+        '"Code","Department","MainItem","Sales","Units","SalesCost","Refunds","RefundsQty",'
+        '"RefundsCost","NettSales","NettCost","Profit","Purchases","RETURNS","PurchasesQT",'
+        '"RETURNSQT","NettPurchases","NettPurchases_VAT","VAT"'
+    )
+    purchases_rows = [
+        build_purchases_row("BASE001", department="A1", sales_qty=2.0, avg_cost=5.0),
+        build_purchases_row(
+            "BASE002",
+            department="A1",
+            sales_qty=5.0,
+            purchases_qty=3.0,
+            avg_cost=5.0,
         ),
-        build_under_row(
-            dept="A1",
-            supplier="S002",
-            code="BASE004",
-            description="Widget Delta Fast Seller*1/1/26",
-            on_hand=20.0,
-            qty_90=100.0,
-            avg_3mo=33.33,
-            last_unit_cost=5.00,
-            under_qty_3mo=-2.0,
-            under_qty_6mo=-1.0,
-            under_value_3mo=-10.00,
-            under_value_6mo=-5.00,
-        ),
-        build_under_row(
-            dept="C1",
-            supplier="S005",
-            code="UNDER001",
-            description="Under Report Only Item*1/1/26",
-            on_hand=0.0,
-            qty_90=8.0,
-            avg_3mo=2.67,
-            last_unit_cost=8.00,
-            under_qty_3mo=-5.33,
-            under_qty_6mo=-4.0,
-            under_value_3mo=-42.64,
-            under_value_6mo=-32.00,
-        ),
+        build_purchases_row("BASE004", department="A1", sales_qty=10.0, avg_cost=5.0),
+        build_purchases_row("MOVE001", department="B1", purchases_qty=3.0, avg_cost=12.0),
     ]
 
     (target / "sthold2.csv").write_text("\n".join(sthold_lines) + "\n", encoding="utf-8")
-    (target / "IQStockTurn.csv").write_text("\n".join(turn_header + turn_data) + "\n", encoding="utf-8")
-    (target / "IQStockTurnunder.csv").write_text(
-        "\n".join(under_header + under_data) + "\n", encoding="utf-8"
+    (target / "Sales_Detail_sample.csv").write_text(
+        "\n".join([sales_header, *sales_rows]) + "\n",
+        encoding="utf-8",
+    )
+    (target / "PurchasesDetailed_sample.csv").write_text(
+        "\n".join([purchases_header, *purchases_rows]) + "\n",
+        encoding="utf-8",
     )
 
 
@@ -286,11 +182,14 @@ def _round_float(value: Any) -> Any:
 def _sort_summary_lists(summary: dict[str, Any]) -> dict[str, Any]:
     result = dict(summary)
     result.pop("batch_id", None)
-    for key in ("top_sellers", "sales_items", "reorder_alerts", "overstock_alerts", "slow_moving_items"):
+    for key in ("top_sellers", "sales_items", "reorder_alerts", "overstock_alerts", "margin_alerts", "markup_alerts", "slow_moving_items"):
         if key in result and isinstance(result[key], list):
             result[key] = sorted(result[key], key=lambda row: row.get("code", ""))
     if "dept_values" in result:
         result["dept_values"] = dict(sorted(result["dept_values"].items()))
+    for key in ("dept_overstock_values", "dept_slow_moving_values"):
+        if key in result:
+            result[key] = dict(sorted(result[key].items()))
     if "stock_health" in result and isinstance(result["stock_health"], dict):
         result["stock_health"] = dict(sorted(result["stock_health"].items()))
     return result
@@ -325,6 +224,8 @@ def export_import_snapshot(session: Session) -> dict[str, Any]:
             row.update(
                 {
                     "qty_sold_90": turn.qty_sold_90,
+                    "purchases_qty": turn.purchases_qty,
+                    "returns_qty": turn.returns_qty,
                     "over_stock_qty_3mo": turn.over_stock_qty_3mo,
                     "under_stock_qty_3mo": turn.under_stock_qty_3mo,
                     "under_stock_value_3mo": turn.under_stock_value_3mo,
@@ -356,11 +257,15 @@ def export_import_snapshot(session: Session) -> dict[str, Any]:
 
 
 def run_import_pipeline(session: Session, fixtures_dir: Path | None = None) -> dict[str, Any]:
-    """Run baseline + enrichment imports and return full snapshot with summaries."""
+    """Run baseline + movement imports and return full snapshot with summaries."""
     fixtures = fixtures_dir or FIXTURES_DIR
     baseline_summary = apply_initial_baseline(session, fixtures / "sthold2.csv")
     enrichment_summary = apply_enrichment(
-        session, fixtures / "IQStockTurn.csv", fixtures / "IQStockTurnunder.csv"
+        session,
+        fixtures / "Sales_Detail_sample.csv",
+        fixtures / "PurchasesDetailed_sample.csv",
+        period_start=MOVEMENT_PERIOD_START,
+        period_end=MOVEMENT_PERIOD_END,
     )
     session.flush()
 

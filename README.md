@@ -26,27 +26,31 @@ SQLite database: `%LOCALAPPDATA%\stockAnalysis\stock_data.db`
 
 ## Import assumptions
 
-**Export all files from the same period.** For accurate results, run your IQ Retail exports on the same day and for the same reporting window:
+**Baseline and movement periods must align.** The app uses:
 
 1. **Detailed Stockholding** (`sthold2`) — initial baseline and stock takes
-2. **Stock Turn – Over Stocking** (`IQStockTurn.csv`)
-3. **Stock Turn – Under Stocking** (`IQStockTurnunder.csv`)
+2. **Sales_Detail** — net sales quantities for a user-specified date range
+3. **PurchasesDetailed** — purchase and return quantities for the same date range
 
-The app does not currently verify that these files match. If the baseline and turn reports are from different dates or periods, on-hand quantities and analytics may be inconsistent.
+When importing movement data, confirm the **from/to dates** match the period covered by your IQ Retail exports. The app stores these dates on each import batch for audit.
 
-**Practical check:** Compare the **Date Printed** line at the top of each CSV before importing. On production exports, sthold2 includes date and time (e.g. `Date Printed :14/07/2026 11:40:03`); turn reports include date only (e.g. `Date Printed: 14/07/2026`). All three should show the same print date.
+**Practical checks:**
+
+- Compare **Date Printed** on `sthold2` with your intended baseline moment. If Date Printed falls inside the report period, the app warns that slight inaccuracy may occur (ongoing stock hold).
+- For historical month-end baselines pulled from a prior month, period-close values are used when Date Printed is after the period end.
+- Bridge gaps between month-end baseline and your first weekly movement import by running an additional movement import for the missing days.
 
 **What each file contributes:**
 
 | File | Role |
 |------|------|
 | sthold2 | Full stockholding snapshot, stock values, baseline quantities |
-| IQStockTurn | Sales velocity, over-stock, department, supplier, unit cost |
-| IQStockTurnunder | Under-stock metrics (required alongside the over report) |
+| Sales_Detail | Period net sales, refunds, department, unit cost |
+| PurchasesDetailed | Period purchase and return quantities |
 
-Items that appear only in sthold2 are kept in inventory but marked **No turn data** and are excluded from turn-based dashboard KPIs. That is expected.
+Items that appear only in sthold2 are kept in inventory but marked **No movement data** and are excluded from movement-based dashboard KPIs. That is expected.
 
-**Future improvement (not implemented):** The app could warn at import time when `Date Printed` or report periods differ across files. For now, alignment is the client's responsibility when exporting from IQ Retail.
+**Backdate import (Settings):** Rolls baseline backward by reversing movement for a selected period. Imports are blocked if any SKU would go below zero.
 
 ## Phase 1
 
@@ -56,10 +60,10 @@ Items that appear only in sthold2 are kept in inventory but marked **No turn dat
 
 ## Phase 2
 
-- Step 2 enrichment: `IQStockTurn.csv` + `IQStockTurnunder.csv`
+- Step 2 enrichment: `Sales_Detail` + `PurchasesDetailed` for a confirmed date range
 - Ongoing period imports from Home
 - Dashboard charts (Qt Charts), understock alerts
-- Inventory: dept, sold 90d, item detail with period history
+- Inventory: dept, weekly sales lookback, item detail with period history
 
 ## Phase 3
 
@@ -69,7 +73,7 @@ Items that appear only in sthold2 are kept in inventory but marked **No turn dat
 
 ## Phase 4
 
-- **Period selector** on Home and Reports — switch between enrichment and period imports
+- **Sales period (weeks)** spinbox on Home, Inventory, and Reports — sum sales across recent import weeks
 - **Reports page** — Slow Moving, ABC analysis, Pivot exploration
 - **Excel/PDF export** — understock alerts, reports, item history
 - **Per-item charts** — sales and over/under trends on item detail

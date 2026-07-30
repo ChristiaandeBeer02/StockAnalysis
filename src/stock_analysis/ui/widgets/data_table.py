@@ -4,6 +4,8 @@ from PySide6.QtCore import QSize, Qt
 from PySide6.QtGui import QColor, QPalette, QStandardItem, QStandardItemModel
 from PySide6.QtWidgets import QAbstractItemView, QHeaderView, QSizePolicy, QTableView
 
+from stock_analysis.ui.sort_helpers import SORT_ROLE, cell_sort_value
+
 
 class DataTable(QTableView):
     def __init__(self, parent=None):
@@ -12,6 +14,7 @@ class DataTable(QTableView):
         self._viewport_scroll = False
         self._apply_palette()
         self._model = QStandardItemModel(self)
+        self._model.setSortRole(Qt.ItemDataRole(SORT_ROLE))
         self.setModel(self._model)
         self.setSortingEnabled(True)
         self.setAlternatingRowColors(True)
@@ -70,13 +73,7 @@ class DataTable(QTableView):
             for value in row_data:
                 item = QStandardItem(str(value))
                 item.setEditable(False)
-                if isinstance(value, (int, float)) or (
-                    isinstance(value, str) and value.replace(".", "", 1).isdigit()
-                ):
-                    item.setData(
-                        float(value) if value not in ("", "—") else 0,
-                        Qt.ItemDataRole.UserRole,
-                    )
+                item.setData(cell_sort_value(value), Qt.ItemDataRole(SORT_ROLE))
                 items.append(item)
             self._model.appendRow(items)
         self.setSortingEnabled(sorting)
@@ -101,13 +98,3 @@ class DataTable(QTableView):
         )
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         self.setFixedHeight(height)
-
-    def row_key_at(self, row: int, column: int = 0) -> str | None:
-        model = self.model()
-        index = model.index(row, column)
-        if not index.isValid():
-            return None
-        sku = model.data(index, Qt.ItemDataRole.UserRole)
-        if sku:
-            return str(sku)
-        return model.data(index, Qt.ItemDataRole.DisplayRole)

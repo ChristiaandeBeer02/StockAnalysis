@@ -5,15 +5,16 @@ from __future__ import annotations
 import pandas as pd
 from sqlalchemy.orm import Session
 
-from stock_analysis.analytics.dashboard import get_period_lines
+from stock_analysis.analytics.dashboard import get_lookback_period_lines
 from stock_analysis.analytics.lookback import (
-    DEFAULT_LOOKBACK,
-    build_prior_qty_map,
+    DEFAULT_LOOKBACK_WEEKS,
+    build_multi_batch_qty_map,
+    item_qty_sold,
     pivot_qty_field_label,
-    qty_sold,
 )
 from stock_analysis.analytics.metrics import effective_on_hand, effective_unit_cost, stock_value
 from stock_analysis.analytics.queries import baseline_qty_map
+from stock_analysis.analytics.reports import _line_department
 
 ROW_FIELDS = {
     "Department": "dept",
@@ -29,8 +30,8 @@ STATIC_VALUE_FIELDS = {
 }
 
 
-def value_fields_for_lookback(lookback_days: int = DEFAULT_LOOKBACK) -> dict[str, str]:
-    fields = {pivot_qty_field_label(lookback_days): "qty_sold"}
+def value_fields_for_lookback(lookback_weeks: int = DEFAULT_LOOKBACK_WEEKS) -> dict[str, str]:
+    fields = {pivot_qty_field_label(lookback_weeks): "qty_sold"}
     fields.update(STATIC_VALUE_FIELDS)
     return fields
 
@@ -42,37 +43,34 @@ def build_pivot(
     session: Session,
     row_field: str,
     value_field: str,
-    batch_id: int | None = None,
     nickname_map: dict[str, str] | None = None,
-    lookback_days: int = DEFAULT_LOOKBACK,
+    lookback_weeks: int = DEFAULT_LOOKBACK_WEEKS,
+    *,
+    dept_filter: str | None = None,
 ) -> tuple[list[str], list[list[str]]]:
     del nickname_map  # reserved for row label display in UI exports
-    lines = get_period_lines(session, batch_id)
+    lines = get_lookback_period_lines(session, lookback_weeks)
     if not lines:
         return [], []
 
     row_key = ROW_FIELDS.get(row_field, "dept")
-    value_fields = value_fields_for_lookback(lookback_days)
+    value_fields = value_fields_for_lookback(lookback_weeks)
     value_key = value_fields.get(value_field, "qty_sold")
     baseline_map = baseline_qty_map(session, [item.id for _, item in lines])
-    prior_map, lookback_60_source = build_prior_qty_map(session, batch_id)
-    use_two_period_60 = lookback_days == 60 and lookback_60_source == "two_period"
+    qty_map = build_multi_batch_qty_map(session, lookback_weeks)
 
     records = []
     for line, item in lines:
+        if dept_filter and _line_department(line, item) != dept_filter:
+            continue
         cost = effective_unit_cost(line, item)
         on_hand = effective_on_hand(baseline_map, item.id, line.on_hand)
         records.append(
             {
-                "dept": line.dept or item.department or "Unknown",
+                "dept": _line_department(line, item),
                 "supplier": line.supplier or item.supplier or "Unknown",
                 "sku": item.sku,
-                "qty_sold": qty_sold(
-                    line,
-                    lookback_days,
-                    prior_qty_30=prior_map.get(item.id, 0.0),
-                    use_two_period_60=use_two_period_60,
-                ),
+                "qty_sold": item_qty_sold(qty_map, item.id),
                 "stock_value": stock_value(on_hand, cost),
                 "on_hand": on_hand,
                 "over_stock_qty_3mo": line.over_stock_qty_3mo,

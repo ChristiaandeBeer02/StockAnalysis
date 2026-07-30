@@ -58,9 +58,6 @@ class ImportBridge(QObject):
         self._thread = threading.Thread(target=worker_main, daemon=True, name="import-worker")
         self._thread.start()
 
-    def is_running(self) -> bool:
-        return self._thread is not None and self._thread.is_alive()
-
 
 def run_in_background(
     parent,

@@ -38,6 +38,3 @@ class ReportHeader(QFrame):
 
     def add_control(self, widget: QWidget) -> None:
         self._controls.addWidget(widget)
-
-    def add_stretch(self) -> None:
-        self._controls.addStretch()

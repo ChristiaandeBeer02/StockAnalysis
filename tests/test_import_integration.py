@@ -26,7 +26,7 @@ def _load_golden() -> dict:
 
 
 def test_fixture_files_exist(fixtures_dir: Path):
-    for name in ("sthold2.csv", "IQStockTurn.csv", "IQStockTurnunder.csv", "expected_output.json"):
+    for name in ("sthold2.csv", "Sales_Detail_sample.csv", "PurchasesDetailed_sample.csv", "expected_output.json"):
         assert (fixtures_dir / name).exists(), f"Missing fixture: {name}"
 
 

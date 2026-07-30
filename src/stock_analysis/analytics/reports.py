@@ -2,44 +2,48 @@
 
 from __future__ import annotations
 
+import math
+
 from sqlalchemy.orm import Session
 
-from stock_analysis.analytics.dashboard import build_period_summary, get_period_lines
+from stock_analysis.analytics.dashboard import build_period_summary, get_lookback_period_lines
 from stock_analysis.analytics.lookback import (
-    DEFAULT_LOOKBACK,
-    build_prior_qty_map,
-    qty_sold,
+    DEFAULT_LOOKBACK_WEEKS,
+    build_multi_batch_qty_map,
+    item_qty_sold,
 )
 from stock_analysis.analytics.metrics import (
     effective_on_hand,
     effective_unit_cost,
+    stock_position_from_weekly_sales,
     stock_value,
 )
-from stock_analysis.analytics.queries import baseline_qty_map
-from stock_analysis.db.models import ImportBatch
+from stock_analysis.analytics.queries import baseline_qty_map, get_optimum_stock_months
+from stock_analysis.db.models import Item, PeriodTurnLine
+
+
+def _line_department(line: PeriodTurnLine, item: Item) -> str:
+    return (line.dept or item.department) or "Unknown"
 
 
 def slow_moving_report(
     session: Session,
-    batch_id: int | None = None,
-    lookback_days: int = DEFAULT_LOOKBACK,
+    lookback_weeks: int = DEFAULT_LOOKBACK_WEEKS,
+    *,
+    dept_filter: str | None = None,
 ) -> list[dict]:
-    lines = get_period_lines(session, batch_id)
+    lines = get_lookback_period_lines(session, lookback_weeks)
     if not lines:
         return []
 
     baseline_map = baseline_qty_map(session, [item.id for _, item in lines])
-    prior_map, lookback_60_source = build_prior_qty_map(session, batch_id)
-    use_two_period_60 = lookback_days == 60 and lookback_60_source == "two_period"
+    qty_map = build_multi_batch_qty_map(session, lookback_weeks)
     report: list[dict] = []
     for line, item in lines:
+        if dept_filter and _line_department(line, item) != dept_filter:
+            continue
         qty = effective_on_hand(baseline_map, item.id, line.on_hand)
-        sold = qty_sold(
-            line,
-            lookback_days,
-            prior_qty_30=prior_map.get(item.id, 0.0),
-            use_two_period_60=use_two_period_60,
-        )
+        sold = item_qty_sold(qty_map, item.id)
         if sold != 0 or qty <= 0:
             continue
         cost = effective_unit_cost(line, item)
@@ -59,27 +63,66 @@ def slow_moving_report(
     return report
 
 
-def abc_report(
+def understocked_report(
     session: Session,
-    batch_id: int | None = None,
-    lookback_days: int = DEFAULT_LOOKBACK,
+    lookback_weeks: int = DEFAULT_LOOKBACK_WEEKS,
+    *,
+    dept_filter: str | None = None,
 ) -> list[dict]:
-    lines = get_period_lines(session, batch_id)
+    lines = get_lookback_period_lines(session, lookback_weeks)
     if not lines:
         return []
 
     baseline_map = baseline_qty_map(session, [item.id for _, item in lines])
-    prior_map, lookback_60_source = build_prior_qty_map(session, batch_id)
-    use_two_period_60 = lookback_days == 60 and lookback_60_source == "two_period"
+    qty_map = build_multi_batch_qty_map(session, lookback_weeks)
+    optimum_months = get_optimum_stock_months(session)
+    report: list[dict] = []
+    for line, item in lines:
+        if dept_filter and _line_department(line, item) != dept_filter:
+            continue
+        on_hand = effective_on_hand(baseline_map, item.id, line.on_hand)
+        sold = item_qty_sold(qty_map, item.id)
+        _, under_qty = stock_position_from_weekly_sales(
+            on_hand, sold, lookback_weeks, optimum_months
+        )
+        if under_qty >= 0:
+            continue
+        cost = effective_unit_cost(line, item)
+        units_under = math.ceil(abs(under_qty))
+        report.append(
+            {
+                "sku": item.sku,
+                "name": item.name[:80],
+                "dept": line.dept or item.department or "—",
+                "on_hand": on_hand,
+                "units_under": units_under,
+                "unit_cost": cost,
+                "purchase_cost": units_under * cost,
+            }
+        )
+
+    report.sort(key=lambda row: row["purchase_cost"], reverse=True)
+    return report
+
+
+def abc_report(
+    session: Session,
+    lookback_weeks: int = DEFAULT_LOOKBACK_WEEKS,
+    *,
+    dept_filter: str | None = None,
+) -> list[dict]:
+    lines = get_lookback_period_lines(session, lookback_weeks)
+    if not lines:
+        return []
+
+    baseline_map = baseline_qty_map(session, [item.id for _, item in lines])
+    qty_map = build_multi_batch_qty_map(session, lookback_weeks)
     rows: list[dict] = []
     for line, item in lines:
+        if dept_filter and _line_department(line, item) != dept_filter:
+            continue
         cost = effective_unit_cost(line, item)
-        sold = qty_sold(
-            line,
-            lookback_days,
-            prior_qty_30=prior_map.get(item.id, 0.0),
-            use_two_period_60=use_two_period_60,
-        )
+        sold = item_qty_sold(qty_map, item.id)
         sales_val = sold * cost
         qty = effective_on_hand(baseline_map, item.id, line.on_hand)
         rows.append(
@@ -118,26 +161,24 @@ def abc_report(
 
 def abc_summary(
     session: Session,
-    batch_id: int | None = None,
     report: list[dict] | None = None,
-    lookback_days: int = DEFAULT_LOOKBACK,
+    lookback_weeks: int = DEFAULT_LOOKBACK_WEEKS,
 ) -> dict[str, int]:
-    rows = report if report is not None else abc_report(session, batch_id, lookback_days)
+    rows = report if report is not None else abc_report(session, lookback_weeks)
     summary = {"A": 0, "B": 0, "C": 0}
     for row in rows:
         summary[row["abc_class"]] += 1
     return summary
 
 
-def report_period_label(session: Session, batch_id: int | None = None) -> str:
-    if batch_id:
-        batch = session.get(ImportBatch, batch_id)
-    else:
-        summary = build_period_summary(session)
-        if not summary:
-            return "Latest period"
-        return f"{summary.get('period_start', '')} – {summary.get('period_end', '')}"
+def report_period_label(session: Session, lookback_weeks: int = DEFAULT_LOOKBACK_WEEKS) -> str:
+    from stock_analysis.analytics.dashboard import _latest_turn_batch
 
-    if batch and batch.period_start and batch.period_end:
-        return f"{batch.period_start} – {batch.period_end}"
-    return batch.file_name if batch else "Latest period"
+    batch = _latest_turn_batch(session)
+    if not batch:
+        return "Latest period"
+    if lookback_weeks == 1 and batch.period_end:
+        return f"As of {batch.period_end}"
+    if batch.period_end:
+        return f"Last {lookback_weeks} week(s) (as of {batch.period_end})"
+    return f"Last {lookback_weeks} week(s)"

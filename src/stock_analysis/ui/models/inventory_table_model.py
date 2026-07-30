@@ -4,33 +4,35 @@ from __future__ import annotations
 
 from PySide6.QtCore import QAbstractTableModel, QModelIndex, Qt
 
-from stock_analysis.analytics.inventory_queries import fetch_inventory_rows, inventory_headers
-from stock_analysis.analytics.lookback import DEFAULT_LOOKBACK, get_lookback_days
+from stock_analysis.analytics.inventory_queries import inventory_headers, load_inventory_view_data
+from stock_analysis.analytics.lookback import DEFAULT_LOOKBACK_WEEKS, get_lookback_weeks
 from stock_analysis.db.session import get_session, has_enrichment
+from stock_analysis.ui.sort_helpers import SORT_ROLE, cell_sort_value
 
 
 class InventoryTableModel(QAbstractTableModel):
     def __init__(self, parent=None):
         super().__init__(parent)
-        self._lookback_days = DEFAULT_LOOKBACK
-        self._headers = inventory_headers(self._lookback_days)
+        self._lookback_weeks = DEFAULT_LOOKBACK_WEEKS
+        self._headers = inventory_headers(self._lookback_weeks)
         self._rows: list[list[str]] = []
         self._search = ""
         self._status = "Active"
         self._dept: str | None = None
-        self._batch_id: int | None = None
         self._has_enrichment = False
         self._nickname_map: dict[str, str] = {}
+        self._last_summary: dict | None = None
+
+    @property
+    def last_summary(self) -> dict | None:
+        return self._last_summary
 
     def set_nickname_map(self, nickname_map: dict[str, str]) -> None:
         self._nickname_map = nickname_map
 
-    def set_batch_id(self, batch_id: int | None) -> None:
-        self._batch_id = batch_id
-
-    def set_lookback_days(self, lookback_days: int) -> None:
-        self._lookback_days = lookback_days
-        self._headers = inventory_headers(lookback_days)
+    def set_lookback_weeks(self, lookback_weeks: int) -> None:
+        self._lookback_weeks = lookback_weeks
+        self._headers = inventory_headers(lookback_weeks)
 
     def rowCount(self, parent=QModelIndex()) -> int:
         if parent.isValid():
@@ -53,12 +55,11 @@ class InventoryTableModel(QAbstractTableModel):
             return value
         if role == Qt.ItemDataRole.UserRole and col == 0:
             return self._rows[row][0]
-        if role == Qt.ItemDataRole.UserRole + 1:
-            if isinstance(value, (int, float)):
-                return float(value)
-            if isinstance(value, str) and value.replace(".", "", 1).isdigit() and value not in ("", "—"):
-                return float(value)
-            return 0.0
+        if role in (Qt.ItemDataRole.UserRole + 1, Qt.ItemDataRole(SORT_ROLE)):
+            sort_val = cell_sort_value(value)
+            if isinstance(sort_val, float):
+                return sort_val
+            return sort_val
         return None
 
     def headerData(self, section: int, orientation, role=Qt.ItemDataRole.DisplayRole):
@@ -71,7 +72,7 @@ class InventoryTableModel(QAbstractTableModel):
     def sort(self, column: int, order=Qt.SortOrder.AscendingOrder) -> None:
         self.layoutAboutToBeChanged.emit()
         reverse = order == Qt.SortOrder.DescendingOrder
-        self._rows.sort(key=lambda r: r[column].lower() if isinstance(r[column], str) else r[column], reverse=reverse)
+        self._rows.sort(key=lambda r: cell_sort_value(r[column]), reverse=reverse)
         self.layoutChanged.emit()
 
     @property
@@ -99,18 +100,18 @@ class InventoryTableModel(QAbstractTableModel):
     def reload(self) -> None:
         with get_session() as session:
             self._has_enrichment = has_enrichment(session)
-            lookback_days = self._lookback_days or get_lookback_days(session)
-            rows = fetch_inventory_rows(
+            lookback_weeks = self._lookback_weeks or get_lookback_weeks(session)
+            rows, summary = load_inventory_view_data(
                 session,
                 search=self._search,
                 status=self._status,
                 has_enrichment=self._has_enrichment,
                 dept=self._dept,
                 nickname_map=self._nickname_map,
-                batch_id=self._batch_id,
-                lookback_days=lookback_days,
+                lookback_weeks=lookback_weeks,
             )
+            self._last_summary = summary
         self.beginResetModel()
-        self._headers = inventory_headers(lookback_days)
+        self._headers = inventory_headers(lookback_weeks)
         self._rows = rows
         self.endResetModel()

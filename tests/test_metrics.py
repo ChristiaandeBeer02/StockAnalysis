@@ -8,6 +8,9 @@ from stock_analysis.analytics.metrics import (
     computed_understock_qty,
     effective_on_hand,
     effective_unit_cost,
+    gross_margin_pct,
+    markup_pct,
+    pct_in_range,
     stock_health_category,
 )
 
@@ -69,3 +72,21 @@ def test_stock_health_category_understock_takes_priority():
     assert (
         stock_health_category(under_qty=-5, over_qty=0, sold=0, on_hand=10) == "understocked"
     )
+
+
+def test_markup_pct_on_cost():
+    assert markup_pct(40.0, 100.0) == pytest.approx(40.0)
+
+
+def test_gross_margin_pct_on_revenue():
+    assert gross_margin_pct(40.0, 100.0) == pytest.approx(40.0)
+
+
+def test_pct_in_range_inside():
+    assert pct_in_range(35.0, 30.0, 40.0, "inside") is True
+    assert pct_in_range(25.0, 30.0, 40.0, "inside") is False
+
+
+def test_pct_in_range_outside():
+    assert pct_in_range(25.0, 30.0, 40.0, "outside") is True
+    assert pct_in_range(35.0, 30.0, 40.0, "outside") is False

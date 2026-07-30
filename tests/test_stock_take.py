@@ -55,6 +55,7 @@ def _make_parsed(rows: list[tuple[str, str, float, float | None]]) -> Stockholdi
         rows=parsed_rows,
         period_start="01/01/2026",
         period_end="31/01/2026",
+        date_printed=None,
         stats=ParseStats(total_rows=len(parsed_rows), deprecated_rows=0, skipped_rows=0),
     )
 

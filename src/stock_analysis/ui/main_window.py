@@ -20,17 +20,19 @@ from stock_analysis.analytics.cache import invalidate_summaries, load_summaries
 from stock_analysis.config import APP_NAME
 from stock_analysis.db.session import get_session, has_initial_baseline
 from stock_analysis.ui.navigation import MAX_NAV_STACK, NavState
+from stock_analysis.ui.pages.compare_page import ComparePage
 from stock_analysis.ui.pages.home_page import HomePage
 from stock_analysis.ui.pages.inventory_page import InventoryPage
 from stock_analysis.ui.pages.reports_page import ReportsPage
 from stock_analysis.ui.pages.settings_page import SettingsPage
 from stock_analysis.ui.wizards.initial_baseline_wizard import InitialBaselineWizard
-from stock_analysis.ui.wizards.turn_import_wizard import run_enrichment_wizard, run_period_import_wizard
+from stock_analysis.ui.wizards.movement_import_wizard import run_enrichment_wizard, run_period_import_wizard
 
 NAV_ITEMS = [
     ("Home", "home"),
     ("Inventory", "inventory"),
     ("Reports", "reports"),
+    ("Compare", "compare"),
     ("Settings", "settings"),
 ]
 
@@ -63,6 +65,7 @@ class MainWindow(QMainWindow):
             item = QListWidgetItem(label)
             self._nav.addItem(item)
         self._nav.currentRowChanged.connect(self._on_nav_changed)
+        self._nav.itemClicked.connect(self._on_nav_item_clicked)
         side_layout.addWidget(self._nav)
         side_layout.addStretch()
         root.addWidget(sidebar)
@@ -71,12 +74,14 @@ class MainWindow(QMainWindow):
         self._home = HomePage()
         self._inventory = InventoryPage()
         self._reports = ReportsPage()
+        self._compare = ComparePage()
         self._settings = SettingsPage()
 
         self._pages = [
             self._home,
             self._inventory,
             self._reports,
+            self._compare,
             self._settings,
         ]
 
@@ -85,8 +90,8 @@ class MainWindow(QMainWindow):
         root.addWidget(self._stack, stretch=1)
 
         self._home.import_initial_requested.connect(self._run_initial_import)
-        self._home.import_enrichment_requested.connect(self._not_implemented_enrichment)
-        self._home.import_period_requested.connect(self._not_implemented_period)
+        self._home.import_enrichment_requested.connect(self._run_enrichment_import)
+        self._home.import_period_requested.connect(self._run_period_import)
         self._home.inventory_dept_requested.connect(self._navigate_to_inventory_items)
         self._home.item_detail_requested.connect(self.open_item_detail)
         self._home.data_changed.connect(self._on_data_changed)
@@ -144,6 +149,21 @@ class MainWindow(QMainWindow):
             if hasattr(page, "refresh"):
                 page.refresh()
             self._dirty_pages.discard(index)
+
+        if self._nav_ready and not self._programmatic_nav and not self._restoring_nav:
+            self._reset_page_to_base(index)
+
+    def _on_nav_item_clicked(self, item: QListWidgetItem) -> None:
+        if self._restoring_nav:
+            return
+        index = self._nav.row(item)
+        if index == self._nav.currentRow():
+            self._reset_page_to_base(index)
+
+    def _reset_page_to_base(self, index: int) -> None:
+        page = self._pages[index]
+        if hasattr(page, "reset_to_base"):
+            page.reset_to_base()
 
     def _page_state_at(self, index: int) -> object | None:
         page = self._pages[index]
@@ -232,12 +252,16 @@ class MainWindow(QMainWindow):
         wizard = InitialBaselineWizard(self)
         if wizard.exec():
             self.refresh_all(invalidate_cache=True)
+            from stock_analysis.ui.wizards.post_baseline_setup import run_post_baseline_setup
 
-    def _not_implemented_enrichment(self) -> None:
+            if run_post_baseline_setup(self, wizard.parsed):
+                self.refresh_all(invalidate_cache=True)
+
+    def _run_enrichment_import(self) -> None:
         if run_enrichment_wizard(self):
             self.refresh_all(invalidate_cache=True)
 
-    def _not_implemented_period(self) -> None:
+    def _run_period_import(self) -> None:
         if run_period_import_wizard(self):
             self.refresh_all(invalidate_cache=True)
 
@@ -253,7 +277,6 @@ class MainWindow(QMainWindow):
         self._home.show_stock_alerts(
             alert_type,
             dept if isinstance(dept, str) else None,
-            self._inventory._selected_batch_id,
         )
 
     def _navigate_to_home_slow_moving(self, dept: object) -> None:
@@ -261,7 +284,6 @@ class MainWindow(QMainWindow):
         self._set_sidebar_index(0)
         self._home.show_slow_moving(
             dept if isinstance(dept, str) else None,
-            self._inventory._selected_batch_id,
         )
 
     def refresh_all(self, *, invalidate_cache: bool = True) -> None:
@@ -270,11 +292,10 @@ class MainWindow(QMainWindow):
             self._dirty_pages = set(range(len(self._pages)))
 
         current = self._stack.currentIndex()
-        for index, page in enumerate(self._pages):
-            if index == current or index in self._dirty_pages:
-                if hasattr(page, "refresh"):
-                    page.refresh()
-                self._dirty_pages.discard(index)
+        page = self._pages[current]
+        if hasattr(page, "refresh"):
+            page.refresh()
+        self._dirty_pages.discard(current)
 
         with get_session() as session:
             if has_initial_baseline(session):
