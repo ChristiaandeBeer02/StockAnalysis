@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtWidgets import (
     QComboBox,
+    QFrame,
     QGridLayout,
     QHBoxLayout,
     QHeaderView,
@@ -15,6 +16,7 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QPushButton,
     QScrollArea,
+    QSpinBox,
     QStackedWidget,
     QTabWidget,
     QVBoxLayout,
@@ -35,12 +37,14 @@ from stock_analysis.analytics.department_names import (
     load_nickname_map,
     update_item_department,
 )
+from stock_analysis.analytics.inventory_queries import list_inventory_departments
 from stock_analysis.analytics.lookback import (
     lookback_label,
     over_qty_label,
     sales_period_label,
     under_qty_label,
 )
+from stock_analysis.baseline.manager import update_item_on_hand
 from stock_analysis.db.models import Item
 from stock_analysis.db.session import get_session, has_enrichment, has_initial_baseline
 from stock_analysis.ui.export_dialog import prompt_export_excel
@@ -80,6 +84,7 @@ class InventoryNavState:
 class ItemDetailPage(QWidget):
     back_requested = Signal()
     department_changed = Signal()
+    on_hand_changed = Signal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -93,19 +98,24 @@ class ItemDetailPage(QWidget):
 
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        scroll.setSizeAdjustPolicy(QScrollArea.SizeAdjustPolicy.AdjustIgnored)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
-        outer.addWidget(scroll)
+        outer.setSpacing(0)
+        outer.addWidget(scroll, 1)
 
         body = QWidget()
         body.setObjectName("dashboardCanvas")
+        body.setMinimumHeight(0)
         layout = QGridLayout(body)
         layout.setContentsMargins(16, 16, 16, 16)
         layout.setSpacing(12)
         scroll.setWidget(body)
 
         back_btn = QPushButton("← Back")
-        back_btn.clicked.connect(self.back_requested.emit)
+        back_btn.clicked.connect(self._on_back_clicked)
         self._header = ReportHeader("Item Detail", "")
         self._header.add_control(back_btn)
         self._detail_lookback = create_sales_period_weeks(
@@ -120,7 +130,21 @@ class ItemDetailPage(QWidget):
         self._header.add_control(self._dept_combo)
         layout.addWidget(self._header, 0, 0, 1, 6)
 
-        self._kpi_on_hand = KpiCard("On Hand")
+        self._on_hand_card = QFrame()
+        self._on_hand_card.setObjectName("kpiCard")
+        on_hand_layout = QVBoxLayout(self._on_hand_card)
+        on_hand_layout.setContentsMargins(16, 12, 16, 12)
+        on_hand_layout.setSpacing(4)
+        on_hand_title = QLabel("On Hand")
+        on_hand_title.setObjectName("kpiTitle")
+        self._on_hand_spin = QSpinBox()
+        self._on_hand_spin.setMinimum(0)
+        self._on_hand_spin.setMaximum(9999999)
+        self._on_hand_spin.setButtonSymbols(QSpinBox.ButtonSymbols.NoButtons)
+        self._on_hand_spin.valueChanged.connect(self._on_on_hand_spin_changed)
+        on_hand_layout.addWidget(on_hand_title)
+        on_hand_layout.addWidget(self._on_hand_spin)
+
         self._kpi_value = KpiCard("Stock Value")
         self._kpi_sales = KpiCard("Sales")
         self._kpi_over = KpiCard("Over Qty")
@@ -129,7 +153,7 @@ class ItemDetailPage(QWidget):
         self._kpi_over.set_accent("warning")
         self._kpi_under.set_accent("danger")
         self._kpis = [
-            self._kpi_on_hand,
+            self._on_hand_card,
             self._kpi_value,
             self._kpi_sales,
             self._kpi_over,
@@ -184,8 +208,12 @@ class ItemDetailPage(QWidget):
         export_btn.clicked.connect(self._export_history)
         clear_btn = QPushButton("Show all")
         clear_btn.clicked.connect(self._clear_history_filter)
+        self._save_on_hand_btn = QPushButton("Save")
+        self._save_on_hand_btn.setEnabled(False)
+        self._save_on_hand_btn.clicked.connect(self._save_on_hand)
         self._history_tile.add_action(clear_btn)
         self._history_tile.add_action(export_btn)
+        self._history_tile.add_action(self._save_on_hand_btn)
         self._history = DataTable()
         self._history.set_headers(
             ["Period", "Qty Sold", "Over Qty", "Under Qty", "Unit Cost"]
@@ -201,6 +229,7 @@ class ItemDetailPage(QWidget):
         self._nickname_map: dict[str, str] = {}
         self._lookback_weeks = 1
         self._populating_dept = False
+        self._saved_on_hand: int | None = None
 
     def _set_header_subtitle(self, data: dict) -> None:
         chips = [data["department"], data["supplier"]]
@@ -239,6 +268,52 @@ class ItemDetailPage(QWidget):
         self._dept_combo.setToolTip("" if has_departments else "Import departments first")
         self._dept_combo.blockSignals(False)
         self._populating_dept = False
+
+    def has_unsaved_on_hand_changes(self) -> bool:
+        if self._saved_on_hand is None:
+            return False
+        return self._on_hand_spin.value() != self._saved_on_hand
+
+    def _update_save_button_state(self) -> None:
+        self._save_on_hand_btn.setEnabled(self.has_unsaved_on_hand_changes())
+
+    def _set_on_hand_value(self, qty: int) -> None:
+        self._saved_on_hand = qty
+        self._on_hand_spin.blockSignals(True)
+        self._on_hand_spin.setValue(qty)
+        self._on_hand_spin.blockSignals(False)
+        self._update_save_button_state()
+
+    def _on_on_hand_spin_changed(self, _value: int) -> None:
+        self._update_save_button_state()
+
+    def _on_back_clicked(self) -> None:
+        if self.has_unsaved_on_hand_changes():
+            answer = QMessageBox.question(
+                self,
+                "Unsaved Changes",
+                "You have unsaved on-hand changes. Leave without saving?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No,
+            )
+            if answer != QMessageBox.StandardButton.Yes:
+                return
+        self.back_requested.emit()
+
+    def _save_on_hand(self) -> None:
+        if self._item_id is None or self._saved_on_hand is None:
+            return
+        qty = self._on_hand_spin.value()
+        try:
+            with get_session() as session:
+                update_item_on_hand(session, self._item_id, qty)
+        except ValueError as exc:
+            QMessageBox.critical(self, "Update Failed", str(exc))
+            self._reload_item()
+            return
+        invalidate_summaries()
+        self.on_hand_changed.emit()
+        self._reload_item()
 
     def _on_dept_changed(self, _index: int) -> None:
         if self._populating_dept or self._item_id is None:
@@ -341,6 +416,9 @@ class ItemDetailPage(QWidget):
             if not item:
                 self._header.set_subtitle("Item not found")
                 self._history.clear_data()
+                self._saved_on_hand = None
+                self._on_hand_spin.setEnabled(False)
+                self._save_on_hand_btn.setEnabled(False)
                 return
             self._item_id = item.id
             self._sku = sku
@@ -350,7 +428,12 @@ class ItemDetailPage(QWidget):
 
         if not data:
             self._header.set_subtitle("Item not found")
+            self._saved_on_hand = None
+            self._on_hand_spin.setEnabled(False)
+            self._save_on_hand_btn.setEnabled(False)
             return
+
+        self._on_hand_spin.setEnabled(True)
 
         self._export_title = f"Item History — {data['sku']}"
         self._set_header_subtitle(data)
@@ -358,7 +441,7 @@ class ItemDetailPage(QWidget):
         self._apply_summary(data)
 
     def _apply_summary(self, data: dict) -> None:
-        self._kpi_on_hand.set_value(f"{data['on_hand']:g}")
+        self._set_on_hand_value(int(data["on_hand"]))
         self._kpi_value.set_value(f"R {data['stock_value']:,.2f}")
         self._update_lookback_kpi_titles()
         has_charts = bool(data.get("sales_chart_data") or data.get("stock_chart_data"))
@@ -415,6 +498,7 @@ class InventoryPage(QWidget):
     item_detail_requested = Signal(str)
     stock_alert_requested = Signal(str, object)
     slow_moving_requested = Signal(object)
+    dead_stock_requested = Signal(object)
     data_changed = Signal()
 
     def __init__(self, parent=None):
@@ -471,19 +555,27 @@ class InventoryPage(QWidget):
         self._inv_kpi_under = KpiCard("Understocked", filter_key="understock")
         self._inv_kpi_over = KpiCard("Overstocked", filter_key="overstock")
         self._inv_kpi_slow = KpiCard("Slow Moving", filter_key="slow")
+        self._inv_kpi_dead = KpiCard("Dead Stock", filter_key="dead")
         self._inv_kpi_under.set_accent("danger")
         self._inv_kpi_over.set_accent("warning")
         self._inv_kpi_slow.set_accent("amber")
+        self._inv_kpi_dead.set_accent("danger")
         inv_kpis = [
             self._inv_kpi_count,
             self._inv_kpi_value,
             self._inv_kpi_under,
             self._inv_kpi_over,
             self._inv_kpi_slow,
+            self._inv_kpi_dead,
         ]
         for i, kpi in enumerate(inv_kpis):
             overview_layout.addWidget(kpi, 0, i)
-        for card in (self._inv_kpi_under, self._inv_kpi_over, self._inv_kpi_slow):
+        for card in (
+            self._inv_kpi_under,
+            self._inv_kpi_over,
+            self._inv_kpi_slow,
+            self._inv_kpi_dead,
+        ):
             card.clicked.connect(lambda checked=False, k=card.filter_key: self._on_kpi_filter(k))
 
         self._inv_dept_chart = ChartTile("Stock Value by Dept")
@@ -549,6 +641,7 @@ class InventoryPage(QWidget):
 
         self._detail = ItemDetailPage()
         self._detail.department_changed.connect(self._on_item_department_changed)
+        self._detail.on_hand_changed.connect(self._on_item_on_hand_changed)
 
         self._stack.addWidget(self._list_view)
         self._stack.addWidget(self._detail)
@@ -626,6 +719,8 @@ class InventoryPage(QWidget):
             self.stock_alert_requested.emit("overstock", dept)
         elif key == "slow":
             self.slow_moving_requested.emit(dept)
+        elif key == "dead":
+            self.dead_stock_requested.emit(dept)
 
     def _populate_dept_combo(self, departments: list[str]) -> None:
         current = self._dept_filter
@@ -667,6 +762,13 @@ class InventoryPage(QWidget):
                     self._list_header.set_subtitle(
                         f"Last {weeks_label} · {period['period_start']} – {period['period_end']}"
                     )
+            departments = list_inventory_departments(
+                session,
+                search=self._search.text(),
+                status=self._status_filter.currentText(),
+                has_enrichment=enriched,
+                lookback_weeks=self._lookback_weeks,
+            )
 
         self._inv_kpi_count.set_value(f"{summary['item_count']:,}")
         self._inv_kpi_value.set_value(f"R {summary['total_value']:,.2f}")
@@ -674,6 +776,7 @@ class InventoryPage(QWidget):
             self._inv_kpi_under.set_value(f"R {summary['understock_value']:,.2f}")
             self._inv_kpi_over.set_value(f"R {summary['overstock_value']:,.2f}")
             self._inv_kpi_slow.set_value(f"R {summary['slow_moving_value']:,.2f}")
+            self._inv_kpi_dead.set_value(f"R {summary['dead_stock_value']:,.2f}")
             dept_view, dept_labels = build_dept_values_chart(
                 summary.get("dept_values", {}), self._nickname_map
             )
@@ -681,12 +784,12 @@ class InventoryPage(QWidget):
             health = summary.get("stock_health", {})
             self._inv_health_chart.set_chart_view(build_stock_health_chart(health))
         else:
-            for kpi in (self._inv_kpi_under, self._inv_kpi_over, self._inv_kpi_slow):
+            for kpi in (self._inv_kpi_under, self._inv_kpi_over, self._inv_kpi_slow, self._inv_kpi_dead):
                 kpi.set_value("—")
             self._inv_dept_chart.set_chart_view(build_stock_health_chart({}))
             self._inv_health_chart.set_chart_view(build_stock_health_chart({}))
 
-        self._populate_dept_combo(list(summary.get("dept_values", {}).keys()))
+        self._populate_dept_combo(departments)
 
     def _schedule_filter(self) -> None:
         self._filter_timer.start()
@@ -749,6 +852,11 @@ class InventoryPage(QWidget):
         self._stack.setCurrentWidget(self._detail)
 
     def _on_item_department_changed(self) -> None:
+        self._inventory_model.reload()
+        self._update_table_subtitle()
+        self._refresh_summary()
+
+    def _on_item_on_hand_changed(self) -> None:
         self._inventory_model.reload()
         self._update_table_subtitle()
         self._refresh_summary()

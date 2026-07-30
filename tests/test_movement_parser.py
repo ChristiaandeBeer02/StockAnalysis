@@ -29,7 +29,6 @@ def test_merge_movement_reports_sample() -> None:
     assert base001.net_sales_qty == pytest.approx(2.0)
     assert base001.net_sales_revenue == pytest.approx(10.0)
     assert base001.gross_profit == pytest.approx(0.0)
-    assert base001.gross_margin_pct == pytest.approx(0.0)
 
     base002 = next(row for row in result.rows if row.code == "BASE002")
     assert base002.net_sales_qty == pytest.approx(5.0)
@@ -69,7 +68,6 @@ def test_parse_sales_monetary_with_profit(tmp_path: Path) -> None:
     assert row.net_sales_revenue == pytest.approx(100.0)
     assert row.net_sales_cost == pytest.approx(60.0)
     assert row.gross_profit == pytest.approx(40.0)
-    assert row.gross_margin_pct == pytest.approx(40.0)
 
 
 def test_parse_sales_uses_subdepartm_not_department(tmp_path: Path) -> None:

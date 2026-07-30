@@ -9,15 +9,12 @@ from sqlalchemy.orm import Session
 
 from stock_analysis.analytics.department_names import display_dept
 from stock_analysis.analytics.metrics import (
-    DEFAULT_OPTIMUM_STOCK_MONTHS,
     effective_on_hand,
     effective_unit_cost,
-    gross_margin_pct,
-    markup_pct,
+    gross_profit_from_margin,
+    item_stock_health,
     sales_value,
-    stock_position_from_line,
-    stock_position_from_weekly_sales,
-    stock_health_category,
+    stock_position_from_holding_policy,
     stock_value,
 )
 from stock_analysis.analytics.lookback import (
@@ -30,7 +27,11 @@ from stock_analysis.analytics.lookback import (
     item_sales_totals,
     list_sales_batches,
 )
-from stock_analysis.analytics.queries import baseline_qty_map, get_optimum_stock_months
+from stock_analysis.analytics.queries import (
+    baseline_qty_map,
+    get_holding_weeks,
+    get_stock_buffer_pct_range,
+)
 from stock_analysis.db.models import AnalysisResult, BaselineItem, ImportBatch, Item, PeriodTurnLine
 from stock_analysis.importers.item_filters import should_skip_item
 
@@ -148,28 +149,42 @@ def get_period_lines(
     )
 
 
-def _line_stock_levels(
-    line: PeriodTurnLine,
-    on_hand: float,
-    optimum_months: float,
-) -> tuple[float, float]:
-    return stock_position_from_line(line, on_hand, optimum_months)
-
-
-def _weekly_under_qty(
+def _holding_position(
     on_hand: float,
     sold: float,
-    lookback_weeks: int,
-    optimum_months: float,
-) -> float:
-    _, under_qty = stock_position_from_weekly_sales(
-        on_hand, sold, lookback_weeks, optimum_months
+    period_weeks: int,
+    holding_weeks: int,
+    min_buffer_pct: float,
+    max_buffer_pct: float,
+) -> tuple[float, float]:
+    over_qty, under_qty, _, _ = stock_position_from_holding_policy(
+        on_hand,
+        sold,
+        period_weeks,
+        holding_weeks,
+        min_buffer_pct,
+        max_buffer_pct,
     )
-    return under_qty
+    return over_qty, under_qty
 
 
 def _item_dept(line: PeriodTurnLine | None, item: Item) -> str:
     return (line.dept if line else None) or item.department or "Unknown"
+
+
+def _sales_row_sort_key(
+    item: Item,
+    item_id: int,
+    qty_map: dict[int, float],
+    sales_totals: dict[int, tuple[float, float]],
+    sort_by: str,
+) -> float | tuple[float, float]:
+    qty = qty_map[item_id]
+    if sort_by == "profit":
+        revenue, _profit = item_sales_totals(sales_totals, item_id)
+        profit = gross_profit_from_margin(revenue, item.gross_margin_pct)
+        return (profit, qty)
+    return qty
 
 
 def _build_ranked_sales_rows(
@@ -177,12 +192,27 @@ def _build_ranked_sales_rows(
     lines: list[tuple[PeriodTurnLine, Item]],
     qty_map: dict[int, float],
     *,
+    sales_totals: dict[int, tuple[float, float]] | None = None,
+    sort_by: str = "qty",
     limit: int | None = None,
 ) -> list[tuple[PeriodTurnLine | None, Item, float]]:
     line_by_item = {item.id: (line, item) for line, item in lines}
+    totals = sales_totals or {}
+    item_by_id = {item.id: item for _, item in lines}
+    missing_item_ids = [item_id for item_id in qty_map if item_id not in item_by_id]
+    if missing_item_ids:
+        for item in session.scalars(select(Item).where(Item.id.in_(missing_item_ids))):
+            item_by_id[item.id] = item
+
+    def _rank_key(item_id: int):
+        item = item_by_id.get(item_id)
+        if item is None:
+            return 0.0
+        return _sales_row_sort_key(item, item_id, qty_map, totals, sort_by)
+
     ranked_ids = sorted(
         (item_id for item_id, qty in qty_map.items() if qty > 0),
-        key=lambda item_id: qty_map[item_id],
+        key=_rank_key,
         reverse=True,
     )
     if limit is not None:
@@ -224,7 +254,8 @@ def build_period_summary(
 
     item_ids = [item.id for _, item in lines]
     baseline_map = baseline_qty_map(session, item_ids)
-    optimum_months = get_optimum_stock_months(session)
+    holding_weeks = get_holding_weeks(session)
+    min_buffer_pct, max_buffer_pct = get_stock_buffer_pct_range(session)
     qty_map = build_multi_batch_qty_map(
         session, lookback_weeks, offset=sales_batch_offset
     )
@@ -240,30 +271,55 @@ def build_period_summary(
     overstock_items = 0
     understock_items = 0
     slow_moving = 0
+    dead_stock = 0
     overstock_value = 0.0
     understock_value = 0.0
     slow_moving_value = 0.0
+    dead_stock_value = 0.0
     slow_moving_items: list[dict] = []
+    dead_stock_items: list[dict] = []
     dept_overstock_values: dict[str, float] = {}
     dept_slow_moving_values: dict[str, float] = {}
+    dept_dead_stock_values: dict[str, float] = {}
     for line, item in lines:
         on_hand = effective_on_hand(baseline_map, item.id, line.on_hand)
-        over_qty, _ = _line_stock_levels(line, on_hand, optimum_months)
-        cost = effective_unit_cost(line, item)
         sold = _item_qty(line, item.id)
-        under_qty = _weekly_under_qty(on_hand, sold, lookback_weeks, optimum_months)
+        category, over_qty, under_qty, cover = item_stock_health(
+            on_hand,
+            sold,
+            lookback_weeks=lookback_weeks,
+            holding_weeks=holding_weeks,
+            min_buffer_pct=min_buffer_pct,
+            max_buffer_pct=max_buffer_pct,
+        )
+        cost = effective_unit_cost(line, item)
         dept = _item_dept(line, item)
         total_sales += sold
         total_sales_value += sales_value(sold, cost)
-        category = stock_health_category(
-            under_qty=under_qty, over_qty=over_qty, sold=sold, on_hand=on_hand
-        )
         if category == "understocked":
             understock_items += 1
             understock_value += abs(under_qty) * cost
+        elif category == "dead":
+            dead_stock += 1
+            item_dead_value = stock_value(on_hand, cost)
+            dead_stock_value += item_dead_value
+            dept_dead_stock_values[dept] = (
+                dept_dead_stock_values.get(dept, 0) + item_dead_value
+            )
+            dead_stock_items.append(
+                {
+                    "code": item.sku,
+                    "name": item.name[:40],
+                    "on_hand": on_hand,
+                    "qty_sold": sold,
+                    "dept": line.dept or item.department or "Unknown",
+                    "unit_cost": cost,
+                    "stock_value": item_dead_value,
+                }
+            )
         elif category == "slow_moving":
             slow_moving += 1
-            item_slow_value = on_hand * cost
+            item_slow_value = over_qty * cost
             slow_moving_value += item_slow_value
             dept_slow_moving_values[dept] = (
                 dept_slow_moving_values.get(dept, 0) + item_slow_value
@@ -274,9 +330,11 @@ def build_period_summary(
                     "name": item.name[:40],
                     "on_hand": on_hand,
                     "qty_sold": sold,
+                    "over_qty": over_qty,
+                    "weeks_cover": cover,
                     "dept": line.dept or item.department or "Unknown",
                     "unit_cost": cost,
-                    "stock_value": stock_value(on_hand, cost),
+                    "excess_value": item_slow_value,
                 }
             )
         elif category == "overstocked":
@@ -299,9 +357,18 @@ def build_period_summary(
             "code": item.sku,
             "name": item.name[:40],
             "qty_sold": qty,
+            "gross_profit": gross_profit_from_margin(
+                item_sales_totals(sales_totals, item.id)[0],
+                item.gross_margin_pct,
+            ),
         }
         for _line, item, qty in _build_ranked_sales_rows(
-            session, lines, qty_map, limit=20
+            session,
+            lines,
+            qty_map,
+            sales_totals=sales_totals,
+            sort_by="profit",
+            limit=20,
         )
     ]
 
@@ -309,7 +376,14 @@ def build_period_summary(
     for line, item in lines:
         on_hand = effective_on_hand(baseline_map, item.id, line.on_hand)
         sold = _item_qty(line, item.id)
-        under_qty = _weekly_under_qty(on_hand, sold, lookback_weeks, optimum_months)
+        over_qty, under_qty = _holding_position(
+            on_hand,
+            sold,
+            lookback_weeks,
+            holding_weeks,
+            min_buffer_pct,
+            max_buffer_pct,
+        )
         if under_qty >= 0:
             continue
         cost = effective_unit_cost(line, item)
@@ -329,10 +403,26 @@ def build_period_summary(
     overstock_alerts = []
     for line, item in lines:
         on_hand = effective_on_hand(baseline_map, item.id, line.on_hand)
-        over_qty, _ = _line_stock_levels(line, on_hand, optimum_months)
         sold = _item_qty(line, item.id)
-        under_qty = _weekly_under_qty(on_hand, sold, lookback_weeks, optimum_months)
+        over_qty, under_qty = _holding_position(
+            on_hand,
+            sold,
+            lookback_weeks,
+            holding_weeks,
+            min_buffer_pct,
+            max_buffer_pct,
+        )
         if over_qty <= 0 or under_qty < 0 or sold == 0:
+            continue
+        category, _, _, cover = item_stock_health(
+            on_hand,
+            sold,
+            lookback_weeks=lookback_weeks,
+            holding_weeks=holding_weeks,
+            min_buffer_pct=min_buffer_pct,
+            max_buffer_pct=max_buffer_pct,
+        )
+        if category != "overstocked":
             continue
         cost = effective_unit_cost(line, item)
         overstock_alerts.append(
@@ -350,7 +440,9 @@ def build_period_summary(
 
     margin_alerts = []
     for line, item in lines:
-        revenue, profit = item_sales_totals(sales_totals, item.id)
+        if item.gross_margin_pct is None:
+            continue
+        revenue, _profit = item_sales_totals(sales_totals, item.id)
         if revenue <= 0:
             continue
         margin_alerts.append(
@@ -359,19 +451,15 @@ def build_period_summary(
                 "name": item.name[:40],
                 "dept": line.dept or item.department or "Unknown",
                 "qty_sold": _item_qty(line, item.id),
-                "gross_margin_pct": gross_margin_pct(profit, revenue),
-                "gross_profit": profit,
+                "gross_margin_pct": item.gross_margin_pct,
+                "gross_profit": gross_profit_from_margin(revenue, item.gross_margin_pct),
             }
         )
     margin_alerts.sort(key=lambda x: x["gross_margin_pct"])
 
     markup_alerts = []
     for line, item in lines:
-        revenue, profit = item_sales_totals(sales_totals, item.id)
-        if revenue <= 0:
-            continue
-        cost = revenue - profit
-        if cost <= 0:
+        if item.markup_pct is None:
             continue
         on_hand = effective_on_hand(baseline_map, item.id, line.on_hand)
         unit_cost = effective_unit_cost(line, item)
@@ -382,7 +470,7 @@ def build_period_summary(
                 "dept": line.dept or item.department or "Unknown",
                 "on_hand": on_hand,
                 "unit_cost": unit_cost,
-                "markup_pct": markup_pct(profit, cost),
+                "markup_pct": item.markup_pct,
             }
         )
     markup_alerts.sort(key=lambda x: x["markup_pct"])
@@ -394,8 +482,14 @@ def build_period_summary(
             "dept": (line.dept if line else None) or item.department or "Unknown",
             "qty_sold": qty,
             "sales_value": sales_value(qty, effective_unit_cost(line, item)),
+            "gross_profit": gross_profit_from_margin(
+                item_sales_totals(sales_totals, item.id)[0],
+                item.gross_margin_pct,
+            ),
         }
-        for line, item, qty in _build_ranked_sales_rows(session, lines, qty_map)
+        for line, item, qty in _build_ranked_sales_rows(
+            session, lines, qty_map, sales_totals=sales_totals, sort_by="qty"
+        )
     ]
 
     return {
@@ -409,12 +503,15 @@ def build_period_summary(
         "overstock_items": overstock_items,
         "understock_items": understock_items,
         "slow_moving": slow_moving,
+        "dead_stock": dead_stock,
         "overstock_value": overstock_value,
         "understock_value": understock_value,
         "slow_moving_value": slow_moving_value,
+        "dead_stock_value": dead_stock_value,
         "dept_values": dept_values,
         "dept_overstock_values": dept_overstock_values,
         "dept_slow_moving_values": dept_slow_moving_values,
+        "dept_dead_stock_values": dept_dead_stock_values,
         "top_sellers": top_seller_data,
         "sales_items": sales_items,
         "reorder_alerts": reorder_alerts,
@@ -422,9 +519,19 @@ def build_period_summary(
         "margin_alerts": margin_alerts,
         "markup_alerts": markup_alerts,
         "slow_moving_items": slow_moving_items,
+        "dead_stock_items": dead_stock_items,
         "stock_health": build_stock_health_breakdown_from_lines(
-            lines, baseline_map, optimum_months, qty_map, lookback_weeks
+            lines,
+            baseline_map,
+            qty_map,
+            lookback_weeks,
+            holding_weeks,
+            min_buffer_pct,
+            max_buffer_pct,
         ),
+        "holding_weeks": holding_weeks,
+        "stock_buffer_min_pct": min_buffer_pct,
+        "stock_buffer_max_pct": max_buffer_pct,
     }
 
 
@@ -518,22 +625,35 @@ def build_item_stock_chart_data(session: Session, item_id: int) -> dict:
 def build_stock_health_breakdown_from_lines(
     lines: list[tuple[PeriodTurnLine, Item]],
     baseline_map: dict[int, float],
-    optimum_months: float = DEFAULT_OPTIMUM_STOCK_MONTHS,
     qty_map: dict[int, float] | None = None,
     lookback_weeks: int = DEFAULT_LOOKBACK_WEEKS,
+    holding_weeks: int = 2,
+    min_buffer_pct: float = 20.0,
+    max_buffer_pct: float = 30.0,
 ) -> dict[str, int]:
     qty_map = qty_map or {}
-    counts = {"Understocked": 0, "Overstocked": 0, "Slow Moving": 0, "Healthy": 0}
+    counts = {
+        "Understocked": 0,
+        "Dead Stock": 0,
+        "Overstocked": 0,
+        "Slow Moving": 0,
+        "Healthy": 0,
+    }
     for line, item in lines:
         on_hand = effective_on_hand(baseline_map, item.id, line.on_hand)
-        over_qty, _ = _line_stock_levels(line, on_hand, optimum_months)
         sold = item_qty_sold(qty_map, item.id)
-        under_qty = _weekly_under_qty(on_hand, sold, lookback_weeks, optimum_months)
-        category = stock_health_category(
-            under_qty=under_qty, over_qty=over_qty, sold=sold, on_hand=on_hand
+        category, _, _, _ = item_stock_health(
+            on_hand,
+            sold,
+            lookback_weeks=lookback_weeks,
+            holding_weeks=holding_weeks,
+            min_buffer_pct=min_buffer_pct,
+            max_buffer_pct=max_buffer_pct,
         )
         if category == "understocked":
             counts["Understocked"] += 1
+        elif category == "dead":
+            counts["Dead Stock"] += 1
         elif category == "slow_moving":
             counts["Slow Moving"] += 1
         elif category == "overstocked":
@@ -558,7 +678,13 @@ def build_period_comparison(
         session, lookback_weeks, stock_batch_offset=1, sales_batch_offset=1
     )
     result = {}
-    for key in ("overstock_value", "understock_value", "slow_moving_value", "total_sales_value"):
+    for key in (
+        "overstock_value",
+        "understock_value",
+        "slow_moving_value",
+        "dead_stock_value",
+        "total_sales_value",
+    ):
         cur = current.get(key, 0)
         prev = previous.get(key, 0)
         if prev:
@@ -641,11 +767,19 @@ def build_item_summary(
 
     history_rows = []
     period_health = {"Balanced": 0, "Overstocked": 0, "Understocked": 0}
-    optimum_months = get_optimum_stock_months(session)
+    holding_weeks = get_holding_weeks(session)
+    min_buffer_pct, max_buffer_pct = get_stock_buffer_pct_range(session)
     on_hand = baseline.qty_on_hand
     for line, batch in history:
         label = _period_label(line, batch)
-        line_over, line_under = _line_stock_levels(line, on_hand, optimum_months)
+        line_over, line_under = _holding_position(
+            on_hand,
+            line.qty_sold_90,
+            period_weeks=1,
+            holding_weeks=holding_weeks,
+            min_buffer_pct=min_buffer_pct,
+            max_buffer_pct=max_buffer_pct,
+        )
         if line_under < 0:
             status = "Understocked"
         elif line_over > 0:
@@ -675,8 +809,13 @@ def build_item_summary(
     if selected_line:
         qty_map = build_multi_batch_qty_map(session, lookback_weeks)
         selected_qty_sold = item_qty_sold(qty_map, item_id)
-        over_qty, under_qty = stock_position_from_weekly_sales(
-            on_hand, selected_qty_sold, lookback_weeks, optimum_months
+        over_qty, under_qty = _holding_position(
+            on_hand,
+            selected_qty_sold,
+            lookback_weeks,
+            holding_weeks,
+            min_buffer_pct,
+            max_buffer_pct,
         )
         by_batch = {line.import_batch_id: (line, batch) for line, batch in history}
         for batch_id in reversed(get_batch_ids_for_weeks(session, lookback_weeks)):

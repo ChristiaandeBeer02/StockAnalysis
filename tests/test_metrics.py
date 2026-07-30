@@ -4,6 +4,8 @@ import pytest
 
 from stock_analysis.analytics.metrics import (
     DEFAULT_OPTIMUM_STOCK_MONTHS,
+    compute_base_target_qty,
+    compute_healthy_band,
     computed_overstock_qty,
     computed_understock_qty,
     effective_on_hand,
@@ -11,7 +13,10 @@ from stock_analysis.analytics.metrics import (
     gross_margin_pct,
     markup_pct,
     pct_in_range,
+    slow_moving_cover_threshold_weeks,
     stock_health_category,
+    stock_position_from_holding_policy,
+    weeks_of_cover,
 )
 
 
@@ -62,9 +67,39 @@ def test_default_optimum_months_is_two():
     assert DEFAULT_OPTIMUM_STOCK_MONTHS == 2.0
 
 
-def test_stock_health_category_prioritizes_slow_moving_over_overstock():
+def test_stock_health_category_zero_sales_is_dead():
     assert (
-        stock_health_category(under_qty=0, over_qty=20, sold=0, on_hand=20) == "slow_moving"
+        stock_health_category(under_qty=0, over_qty=20, sold=0, on_hand=20) == "dead"
+    )
+
+
+def test_stock_health_category_slow_when_cover_exceeds_twice_hold():
+    assert slow_moving_cover_threshold_weeks(2) == pytest.approx(4.0)
+    assert weeks_of_cover(300.0, 5.0, 2) == pytest.approx(120.0)
+    assert (
+        stock_health_category(
+            under_qty=0,
+            over_qty=20,
+            sold=5.0,
+            on_hand=300,
+            weeks_of_cover=120.0,
+            holding_weeks=2,
+        )
+        == "slow_moving"
+    )
+
+
+def test_stock_health_category_overstock_when_cover_within_twice_hold():
+    assert (
+        stock_health_category(
+            under_qty=0,
+            over_qty=5,
+            sold=10.0,
+            on_hand=35,
+            weeks_of_cover=3.5,
+            holding_weeks=2,
+        )
+        == "overstocked"
     )
 
 
@@ -74,8 +109,42 @@ def test_stock_health_category_understock_takes_priority():
     )
 
 
+def test_compute_base_target_qty():
+    assert compute_base_target_qty(120.0, 4, 2) == pytest.approx(60.0)
+    assert compute_base_target_qty(100.0, 1, 2) == pytest.approx(200.0)
+
+
+def test_compute_healthy_band():
+    min_h, max_h = compute_healthy_band(100.0, 20.0, 30.0)
+    assert min_h == pytest.approx(120.0)
+    assert max_h == pytest.approx(130.0)
+
+
+def test_stock_position_from_holding_policy_bands():
+    over_qty, under_qty, min_h, max_h = stock_position_from_holding_policy(
+        55.0, 50.0, 1, 1, 20.0, 30.0
+    )
+    assert min_h == pytest.approx(60.0)
+    assert max_h == pytest.approx(65.0)
+    assert under_qty == pytest.approx(-5.0)
+    assert over_qty == pytest.approx(0.0)
+
+    over_qty, under_qty, _, max_h = stock_position_from_holding_policy(
+        70.0, 50.0, 1, 1, 20.0, 30.0
+    )
+    assert over_qty == pytest.approx(5.0)
+    assert under_qty == pytest.approx(0.0)
+
+
 def test_markup_pct_on_cost():
     assert markup_pct(40.0, 100.0) == pytest.approx(40.0)
+
+
+def test_gross_profit_from_margin():
+    from stock_analysis.analytics.metrics import gross_profit_from_margin
+
+    assert gross_profit_from_margin(200.0, 40.0) == pytest.approx(80.0)
+    assert gross_profit_from_margin(200.0, None) == pytest.approx(0.0)
 
 
 def test_gross_margin_pct_on_revenue():

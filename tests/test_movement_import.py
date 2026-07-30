@@ -11,13 +11,14 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from stock_analysis.analytics.movement_periods import suggest_next_movement_period
 from stock_analysis.baseline.manager import (
-    BackdateValidationError,
     apply_backdate_import,
     apply_baseline_alignment,
     apply_enrichment,
     apply_initial_baseline,
     apply_period_import,
+    find_negative_qty_skus,
 )
+from stock_analysis.importers.movement_parser import merge_movement_reports
 from stock_analysis.analytics.inventory_queries import fetch_inventory_rows
 from stock_analysis.db.models import Base, BaselineItem, Item, PeriodTurnLine
 from stock_analysis.db.session import get_baseline_anchor_date, has_enrichment, set_movement_closing_weekday
@@ -101,7 +102,6 @@ def test_enrichment_stores_revenue_and_profit(session: Session, fixtures: Path) 
     line = lines[0]
     assert line.net_sales_revenue == pytest.approx(10.0)
     assert line.gross_profit == pytest.approx(0.0)
-    assert line.gross_margin_pct == pytest.approx(0.0)
 
 
 def test_backdate_movement_delta(session: Session, fixtures: Path) -> None:
@@ -168,19 +168,35 @@ def test_baseline_alignment_backdates_and_completes_step2(session: Session, fixt
     assert _baseline_qty(session, "BASE001") == pytest.approx(12.0)
 
 
-def test_baseline_alignment_blocks_negative_qty(session: Session, fixtures: Path) -> None:
+def test_baseline_alignment_allows_negative_qty(session: Session, fixtures: Path) -> None:
     apply_initial_baseline(session, fixtures / "sthold2.csv")
     set_movement_closing_weekday(session, 5)
     session.commit()
 
-    with pytest.raises(BackdateValidationError):
-        apply_baseline_alignment(
-            session,
-            fixtures / "Sales_Detail_sample.csv",
-            fixtures / "PurchasesDetailed_sample.csv",
-            period_start=MOVEMENT_PERIOD_START,
-            period_end=MOVEMENT_PERIOD_END,
-        )
+    apply_baseline_alignment(
+        session,
+        fixtures / "Sales_Detail_sample.csv",
+        fixtures / "PurchasesDetailed_sample.csv",
+        period_start=MOVEMENT_PERIOD_START,
+        period_end=MOVEMENT_PERIOD_END,
+    )
+    session.commit()
+
+    assert _baseline_qty(session, "MOVE001") == pytest.approx(-3.0)
+
+
+def test_find_negative_qty_skus(session: Session, fixtures: Path) -> None:
+    apply_initial_baseline(session, fixtures / "sthold2.csv")
+    session.commit()
+
+    parsed = merge_movement_reports(
+        fixtures / "Sales_Detail_sample.csv",
+        fixtures / "PurchasesDetailed_sample.csv",
+    )
+    negative = find_negative_qty_skus(session, parsed.rows, direction="backward")
+
+    assert "MOVE001" in negative
+    assert "BASE001" not in negative
 
 
 def test_backdate_import_does_not_change_suggested_alignment_period(
@@ -408,3 +424,30 @@ def test_inventory_summary_includes_all_baseline_dept_values(
     assert "A1" in summary["dept_values"]
     assert summary["dept_values"]["A1"] > 0
     assert summary["stock_health"]["No movement data"] >= 2
+
+
+def test_inventory_dept_filter_uses_movement_line_department(
+    session: Session, fixtures: Path
+) -> None:
+    from stock_analysis.analytics.inventory_queries import load_inventory_view_data
+
+    apply_initial_baseline(session, fixtures / "sthold2.csv")
+    apply_enrichment(
+        session,
+        fixtures / "Sales_Detail_sample.csv",
+        fixtures / "PurchasesDetailed_sample.csv",
+        period_start=MOVEMENT_PERIOD_START,
+        period_end=MOVEMENT_PERIOD_END,
+    )
+    session.commit()
+
+    _, summary = load_inventory_view_data(
+        session,
+        search="",
+        status="Active",
+        has_enrichment=True,
+        dept="A1",
+    )
+
+    assert summary["item_count"] > 0
+    assert summary["dept_values"] == {"A1": summary["dept_values"]["A1"]}

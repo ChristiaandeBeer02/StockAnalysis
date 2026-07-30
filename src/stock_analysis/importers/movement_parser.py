@@ -8,7 +8,6 @@ from pathlib import Path
 
 from stock_analysis.importers.iq_retail_parser import is_deprecated_description, parse_float
 from stock_analysis.importers.item_filters import should_skip_item
-from stock_analysis.analytics.metrics import gross_margin_pct
 
 
 @dataclass
@@ -27,7 +26,6 @@ class MovementRow:
     net_sales_revenue: float = 0.0
     net_sales_cost: float = 0.0
     gross_profit: float = 0.0
-    gross_margin_pct: float = 0.0
     is_deprecated: bool = False
 
 
@@ -59,7 +57,7 @@ def _float_field(row: dict[str, str], *names: str) -> float:
     return parse_float(_field(row, *names))
 
 
-def _parse_sales_monetary(raw: dict[str, str]) -> tuple[float, float, float, float]:
+def _parse_sales_monetary(raw: dict[str, str]) -> tuple[float, float, float]:
     net_sales_revenue = _float_field(raw, "NettSales")
     if net_sales_revenue == 0.0:
         gross_sales = _float_field(raw, "Sales")
@@ -76,8 +74,7 @@ def _parse_sales_monetary(raw: dict[str, str]) -> tuple[float, float, float, flo
     if profit == 0.0 and (net_sales_revenue != 0.0 or net_sales_cost != 0.0):
         profit = net_sales_revenue - net_sales_cost
 
-    margin = gross_margin_pct(profit, net_sales_revenue)
-    return net_sales_revenue, net_sales_cost, profit, margin
+    return net_sales_revenue, net_sales_cost, profit
 
 
 def _movement_subdepartment(raw: dict[str, str]) -> str:
@@ -98,7 +95,7 @@ def parse_sales_detail_file(path: Path) -> dict[str, MovementRow]:
         if net_sales_qty == 0.0 and (sales_qty != 0.0 or refunds_qty != 0.0):
             net_sales_qty = sales_qty - refunds_qty
 
-        revenue, cost, profit, margin = _parse_sales_monetary(raw)
+        revenue, cost, profit = _parse_sales_monetary(raw)
 
         rows[code] = MovementRow(
             code=code,
@@ -115,7 +112,6 @@ def parse_sales_detail_file(path: Path) -> dict[str, MovementRow]:
             net_sales_revenue=revenue,
             net_sales_cost=cost,
             gross_profit=profit,
-            gross_margin_pct=margin,
             is_deprecated=is_deprecated_description(description),
         )
     return rows

@@ -6,7 +6,7 @@ import math
 
 from sqlalchemy.orm import Session
 
-from stock_analysis.analytics.dashboard import build_period_summary, get_lookback_period_lines
+from stock_analysis.analytics.dashboard import get_lookback_period_lines
 from stock_analysis.analytics.lookback import (
     DEFAULT_LOOKBACK_WEEKS,
     build_multi_batch_qty_map,
@@ -15,10 +15,15 @@ from stock_analysis.analytics.lookback import (
 from stock_analysis.analytics.metrics import (
     effective_on_hand,
     effective_unit_cost,
-    stock_position_from_weekly_sales,
+    item_stock_health,
+    stock_position_from_holding_policy,
     stock_value,
 )
-from stock_analysis.analytics.queries import baseline_qty_map, get_optimum_stock_months
+from stock_analysis.analytics.queries import (
+    baseline_qty_map,
+    get_holding_weeks,
+    get_stock_buffer_pct_range,
+)
 from stock_analysis.db.models import Item, PeriodTurnLine
 
 
@@ -26,7 +31,14 @@ def _line_department(line: PeriodTurnLine, item: Item) -> str:
     return (line.dept or item.department) or "Unknown"
 
 
-def slow_moving_report(
+def _holding_policy(session: Session) -> tuple[int, float, float]:
+    return (
+        get_holding_weeks(session),
+        *get_stock_buffer_pct_range(session),
+    )
+
+
+def dead_stock_report(
     session: Session,
     lookback_weeks: int = DEFAULT_LOOKBACK_WEEKS,
     *,
@@ -38,13 +50,22 @@ def slow_moving_report(
 
     baseline_map = baseline_qty_map(session, [item.id for _, item in lines])
     qty_map = build_multi_batch_qty_map(session, lookback_weeks)
+    holding_weeks, min_buffer_pct, max_buffer_pct = _holding_policy(session)
     report: list[dict] = []
     for line, item in lines:
         if dept_filter and _line_department(line, item) != dept_filter:
             continue
         qty = effective_on_hand(baseline_map, item.id, line.on_hand)
         sold = item_qty_sold(qty_map, item.id)
-        if sold != 0 or qty <= 0:
+        category, _, _, _ = item_stock_health(
+            qty,
+            sold,
+            lookback_weeks=lookback_weeks,
+            holding_weeks=holding_weeks,
+            min_buffer_pct=min_buffer_pct,
+            max_buffer_pct=max_buffer_pct,
+        )
+        if category != "dead":
             continue
         cost = effective_unit_cost(line, item)
         report.append(
@@ -63,6 +84,54 @@ def slow_moving_report(
     return report
 
 
+def slow_moving_report(
+    session: Session,
+    lookback_weeks: int = DEFAULT_LOOKBACK_WEEKS,
+    *,
+    dept_filter: str | None = None,
+) -> list[dict]:
+    lines = get_lookback_period_lines(session, lookback_weeks)
+    if not lines:
+        return []
+
+    baseline_map = baseline_qty_map(session, [item.id for _, item in lines])
+    qty_map = build_multi_batch_qty_map(session, lookback_weeks)
+    holding_weeks, min_buffer_pct, max_buffer_pct = _holding_policy(session)
+    report: list[dict] = []
+    for line, item in lines:
+        if dept_filter and _line_department(line, item) != dept_filter:
+            continue
+        qty = effective_on_hand(baseline_map, item.id, line.on_hand)
+        sold = item_qty_sold(qty_map, item.id)
+        category, over_qty, _, cover = item_stock_health(
+            qty,
+            sold,
+            lookback_weeks=lookback_weeks,
+            holding_weeks=holding_weeks,
+            min_buffer_pct=min_buffer_pct,
+            max_buffer_pct=max_buffer_pct,
+        )
+        if category != "slow_moving":
+            continue
+        cost = effective_unit_cost(line, item)
+        report.append(
+            {
+                "sku": item.sku,
+                "name": item.name[:80],
+                "dept": line.dept or item.department or "—",
+                "on_hand": qty,
+                "over_qty": over_qty,
+                "weeks_cover": cover,
+                "unit_cost": cost,
+                "excess_value": stock_value(over_qty, cost),
+                "qty_sold": sold,
+            }
+        )
+
+    report.sort(key=lambda row: row["excess_value"], reverse=True)
+    return report
+
+
 def understocked_report(
     session: Session,
     lookback_weeks: int = DEFAULT_LOOKBACK_WEEKS,
@@ -75,15 +144,22 @@ def understocked_report(
 
     baseline_map = baseline_qty_map(session, [item.id for _, item in lines])
     qty_map = build_multi_batch_qty_map(session, lookback_weeks)
-    optimum_months = get_optimum_stock_months(session)
+    holding_weeks, min_buffer_pct, max_buffer_pct = _holding_policy(session)
     report: list[dict] = []
     for line, item in lines:
         if dept_filter and _line_department(line, item) != dept_filter:
             continue
         on_hand = effective_on_hand(baseline_map, item.id, line.on_hand)
         sold = item_qty_sold(qty_map, item.id)
-        _, under_qty = stock_position_from_weekly_sales(
-            on_hand, sold, lookback_weeks, optimum_months
+        if sold == 0:
+            continue
+        _, under_qty, _, _ = stock_position_from_holding_policy(
+            on_hand,
+            sold,
+            lookback_weeks,
+            holding_weeks,
+            min_buffer_pct,
+            max_buffer_pct,
         )
         if under_qty >= 0:
             continue
@@ -102,6 +178,55 @@ def understocked_report(
         )
 
     report.sort(key=lambda row: row["purchase_cost"], reverse=True)
+    return report
+
+
+def overstocked_report(
+    session: Session,
+    lookback_weeks: int = DEFAULT_LOOKBACK_WEEKS,
+    *,
+    dept_filter: str | None = None,
+) -> list[dict]:
+    lines = get_lookback_period_lines(session, lookback_weeks)
+    if not lines:
+        return []
+
+    baseline_map = baseline_qty_map(session, [item.id for _, item in lines])
+    qty_map = build_multi_batch_qty_map(session, lookback_weeks)
+    holding_weeks, min_buffer_pct, max_buffer_pct = _holding_policy(session)
+    report: list[dict] = []
+    for line, item in lines:
+        if dept_filter and _line_department(line, item) != dept_filter:
+            continue
+        on_hand = effective_on_hand(baseline_map, item.id, line.on_hand)
+        sold = item_qty_sold(qty_map, item.id)
+        if sold == 0:
+            continue
+        category, over_qty, under_qty, _ = item_stock_health(
+            on_hand,
+            sold,
+            lookback_weeks=lookback_weeks,
+            holding_weeks=holding_weeks,
+            min_buffer_pct=min_buffer_pct,
+            max_buffer_pct=max_buffer_pct,
+        )
+        if category != "overstocked":
+            continue
+        cost = effective_unit_cost(line, item)
+        units_over = math.ceil(over_qty)
+        report.append(
+            {
+                "sku": item.sku,
+                "name": item.name[:80],
+                "dept": line.dept or item.department or "—",
+                "on_hand": on_hand,
+                "units_over": units_over,
+                "unit_cost": cost,
+                "excess_value": units_over * cost,
+            }
+        )
+
+    report.sort(key=lambda row: row["excess_value"], reverse=True)
     return report
 
 

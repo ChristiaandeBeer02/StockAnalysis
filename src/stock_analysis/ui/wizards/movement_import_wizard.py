@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import csv
 from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
@@ -26,7 +27,12 @@ from stock_analysis.analytics.movement_periods import (
     suggest_next_movement_period,
     weekday_name,
 )
-from stock_analysis.baseline.manager import BackdateValidationError
+from stock_analysis.analytics.stocklist_compare import StocklistComparison, compare_movement_to_stocklist
+from stock_analysis.baseline.manager import (
+    apply_stocklist_override,
+    apply_stocklist_pricing,
+    find_negative_qty_skus,
+)
 from stock_analysis.db.session import (
     get_baseline_anchor_date,
     get_movement_closing_weekday,
@@ -35,6 +41,8 @@ from stock_analysis.db.session import (
     has_initial_baseline,
 )
 from stock_analysis.importers.movement_parser import merge_movement_reports
+from stock_analysis.importers.stocklist_parser import parse_stocklist_file
+from stock_analysis.ui.widgets.data_table import DataTable
 from stock_analysis.ui.workers.import_worker import run_in_background
 
 
@@ -50,6 +58,7 @@ class MovementWizardConfig:
     initial_from: date | None = None
     initial_to: date | None = None
     intro_override: str | None = None
+    enable_stocklist_compare: bool = False
 
 
 def _format_date(value: date) -> str:
@@ -111,6 +120,7 @@ def _build_config(
     initial_to: date | None = None,
     intro_override: str | None = None,
     use_closing_defaults: bool = False,
+    enable_stocklist_compare: bool = False,
 ) -> MovementWizardConfig:
     resolved_from = initial_from
     resolved_to = initial_to
@@ -136,6 +146,7 @@ def _build_config(
         initial_from=resolved_from,
         initial_to=resolved_to,
         intro_override=resolved_intro,
+        enable_stocklist_compare=enable_stocklist_compare,
     )
 
 
@@ -143,11 +154,17 @@ class MovementImportWizard(QDialog):
     def __init__(self, config: MovementWizardConfig, on_import, parent=None):
         super().__init__(parent)
         self.setWindowTitle(config.title)
-        self.setMinimumWidth(620)
+        if config.enable_stocklist_compare:
+            self.setMinimumSize(720, 600)
+        else:
+            self.setMinimumWidth(620)
         self._config = config
         self._on_import = on_import
         self._sales_path: Path | None = None
         self._purchases_path: Path | None = None
+        self._stocklist_path: Path | None = None
+        self._comparison: StocklistComparison | None = None
+        self._parsed_movement_rows = None
 
         layout = QVBoxLayout(self)
         self._intro = QLabel(config.intro)
@@ -183,6 +200,13 @@ class MovementImportWizard(QDialog):
         layout.addWidget(self._purchases_label)
         layout.addWidget(purchases_btn)
 
+        if config.enable_stocklist_compare:
+            self._stocklist_label = QLabel("StockLists file: not selected (optional)")
+            stocklist_btn = QPushButton("Select StockLists CSV…")
+            stocklist_btn.clicked.connect(self._browse_stocklist)
+            layout.addWidget(self._stocklist_label)
+            layout.addWidget(stocklist_btn)
+
         self._preview = QFormLayout()
         self._items = QLabel("—")
         self._deprecated = QLabel("—")
@@ -193,6 +217,33 @@ class MovementImportWizard(QDialog):
         self._preview.addRow("Net sales qty:", self._net_sales)
         self._preview.addRow("Net purchases qty:", self._net_purchases)
         layout.addLayout(self._preview)
+
+        if config.enable_stocklist_compare:
+            self._stocklist_preview = QFormLayout()
+            self._compared = QLabel("—")
+            self._matches = QLabel("—")
+            self._variances = QLabel("—")
+            self._stocklist_preview.addRow("Items compared:", self._compared)
+            self._stocklist_preview.addRow("Exact matches:", self._matches)
+            self._stocklist_preview.addRow("Variances:", self._variances)
+            layout.addLayout(self._stocklist_preview)
+
+            variance_label = QLabel("StockLists variance preview (largest differences first)")
+            layout.addWidget(variance_label)
+            self._variance_table = DataTable()
+            self._variance_table.set_headers(
+                ["SKU", "Name", "Projected", "Stocklist", "Variance", "Type"]
+            )
+            self._variance_table.enable_viewport_scrolling()
+            layout.addWidget(self._variance_table)
+
+            export_row = QHBoxLayout()
+            export_row.addStretch()
+            self._export_btn = QPushButton("Export CSV…")
+            self._export_btn.setEnabled(False)
+            self._export_btn.clicked.connect(self._export_differences_csv)
+            export_row.addWidget(self._export_btn)
+            layout.addLayout(export_row)
 
         buttons = QHBoxLayout()
         buttons.addStretch()
@@ -244,20 +295,84 @@ class MovementImportWizard(QDialog):
             self._purchases_label.setText(f"PurchasesDetailed file: {self._purchases_path.name}")
             self._update_preview()
 
+    def _browse_stocklist(self) -> None:
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Select StockLists CSV", "", "CSV Files (*.csv)"
+        )
+        if path:
+            self._stocklist_path = Path(path)
+            self._stocklist_label.setText(f"StockLists file: {self._stocklist_path.name}")
+            self._update_preview()
+
+    def _clear_stocklist_comparison(self) -> None:
+        self._comparison = None
+        if not self._config.enable_stocklist_compare:
+            return
+        self._compared.setText("—")
+        self._matches.setText("—")
+        self._variances.setText("—")
+        self._variance_table.set_rows([])
+        self._export_btn.setEnabled(False)
+
+    def _update_stocklist_comparison(self, movement_rows) -> None:
+        if not self._config.enable_stocklist_compare:
+            return
+        if not self._stocklist_path:
+            self._clear_stocklist_comparison()
+            return
+        try:
+            stocklist = parse_stocklist_file(self._stocklist_path, require_on_hand=True)
+            with get_session() as session:
+                comparison = compare_movement_to_stocklist(
+                    session,
+                    movement_rows,
+                    stocklist,
+                    direction=self._config.direction,
+                )
+            comparison.file_name = self._stocklist_path.name
+            self._comparison = comparison
+        except Exception as exc:
+            QMessageBox.critical(self, "StockLists Compare Error", str(exc))
+            self._clear_stocklist_comparison()
+            return
+
+        self._compared.setText(f"{len(comparison.lines):,}")
+        self._matches.setText(f"{comparison.exact_matches:,}")
+        self._variances.setText(f"{len(comparison.variance_lines):,}")
+
+        preview_rows = []
+        for line in comparison.variance_lines:
+            preview_rows.append(
+                [
+                    line.sku,
+                    line.name[:50],
+                    f"{line.projected_qty:g}",
+                    f"{line.stocklist_qty:g}",
+                    f"{line.variance:+g}",
+                    line.line_type.replace("_", " "),
+                ]
+            )
+        self._variance_table.set_rows(preview_rows)
+        self._export_btn.setEnabled(len(comparison.variance_lines) > 0)
+
     def _update_preview(self) -> None:
         if not self._sales_path or not self._purchases_path:
             self._confirm.setEnabled(False)
+            self._clear_stocklist_comparison()
             return
         if self._from_date.date() > self._to_date.date():
             self._confirm.setEnabled(False)
+            self._clear_stocklist_comparison()
             return
         try:
             parsed = merge_movement_reports(self._sales_path, self._purchases_path)
         except Exception as exc:
             QMessageBox.critical(self, "Parse Error", str(exc))
             self._confirm.setEnabled(False)
+            self._clear_stocklist_comparison()
             return
 
+        self._parsed_movement_rows = parsed.rows
         deprecated = sum(1 for row in parsed.rows if row.is_deprecated)
         net_sales = sum(row.net_sales_qty for row in parsed.rows)
         net_purchases = sum(row.net_purchases_qty for row in parsed.rows)
@@ -265,7 +380,198 @@ class MovementImportWizard(QDialog):
         self._deprecated.setText(str(deprecated))
         self._net_sales.setText(f"{net_sales:,.2f}")
         self._net_purchases.setText(f"{net_purchases:,.2f}")
+        self._update_stocklist_comparison(parsed.rows)
         self._confirm.setEnabled(len(parsed.rows) > 0)
+
+    def _export_differences_csv(self) -> None:
+        if not self._comparison or not self._comparison.variance_lines:
+            return
+        path, _ = QFileDialog.getSaveFileName(
+            self,
+            "Export StockLists Variances",
+            "stocklist_variances.csv",
+            "CSV Files (*.csv)",
+        )
+        if not path:
+            return
+        try:
+            with Path(path).open("w", newline="", encoding="utf-8") as handle:
+                writer = csv.writer(handle)
+                writer.writerow(
+                    [
+                        "sku",
+                        "name",
+                        "projected_on_hand",
+                        "stocklist_on_hand",
+                        "variance",
+                        "line_type",
+                    ]
+                )
+                for line in self._comparison.variance_lines:
+                    writer.writerow(
+                        [
+                            line.sku,
+                            line.name,
+                            line.projected_qty,
+                            line.stocklist_qty,
+                            line.variance,
+                            line.line_type,
+                        ]
+                    )
+        except OSError as exc:
+            QMessageBox.critical(self, "Export Failed", str(exc))
+            return
+        QMessageBox.information(self, "Export Complete", f"Saved to {path}")
+
+    def _export_negative_skus_csv(self, skus: list[str]) -> None:
+        path, _ = QFileDialog.getSaveFileName(
+            self,
+            "Export Negative SKUs",
+            "negative_skus.csv",
+            "CSV Files (*.csv)",
+        )
+        if not path:
+            return
+        try:
+            with Path(path).open("w", newline="", encoding="utf-8") as handle:
+                writer = csv.writer(handle)
+                writer.writerow(["sku"])
+                for sku in skus:
+                    writer.writerow([sku])
+        except OSError as exc:
+            QMessageBox.critical(self, "Export Failed", str(exc))
+            return
+        QMessageBox.information(self, "Export Complete", f"Saved to {path}")
+
+    def _confirm_negative_qty_warning(self, skus: list[str]) -> bool:
+        preview = ", ".join(skus[:10])
+        suffix = f" (+{len(skus) - 10} more)" if len(skus) > 10 else ""
+        message = (
+            f"{len(skus)} SKU(s) will go below zero after this import: {preview}{suffix}\n\n"
+            "Continue anyway?"
+        )
+
+        while True:
+            box = QMessageBox(self)
+            box.setIcon(QMessageBox.Icon.Warning)
+            box.setWindowTitle("Negative Stock Warning")
+            box.setText(message)
+            export_btn = box.addButton("Export CSV…", QMessageBox.ButtonRole.ActionRole)
+            continue_btn = box.addButton("Continue", QMessageBox.ButtonRole.AcceptRole)
+            cancel_btn = box.addButton("Cancel", QMessageBox.ButtonRole.RejectRole)
+            box.exec()
+            clicked = box.clickedButton()
+            if clicked == continue_btn:
+                return True
+            if clicked == cancel_btn or clicked is None:
+                return False
+            if clicked == export_btn:
+                self._export_negative_skus_csv(skus)
+
+    def _warn_if_negative_qty(self, rows) -> bool:
+        if self._config.direction != "backward":
+            return True
+        if self._config.import_type == "period_turn_backdate":
+            return True
+        with get_session() as session:
+            negative = find_negative_qty_skus(session, rows, direction="backward")
+        if not negative:
+            return True
+        return self._confirm_negative_qty_warning(negative)
+
+    def _handle_post_import_variances(self, result) -> None:
+        comparison = self._comparison
+        stocklist_path = self._stocklist_path
+        if (
+            not self._config.enable_stocklist_compare
+            or stocklist_path is None
+            or comparison is None
+            or not comparison.variance_lines
+        ):
+            QMessageBox.information(
+                self,
+                "Import Complete",
+                (
+                    f"Processed {result.items_processed:,} items "
+                    f"({result.qty_changes:,} quantity updates)."
+                ),
+            )
+            self.accept()
+            return
+
+        message = (
+            f"Movement import complete ({result.items_processed:,} items, "
+            f"{result.qty_changes:,} quantity updates).\n\n"
+            f"{len(comparison.variance_lines):,} StockLists variance(s) found.\n\n"
+            "Override replaces baseline on-hand with StockLists values. "
+            "Ignore keeps movement-computed quantities."
+        )
+
+        while True:
+            box = QMessageBox(self)
+            box.setIcon(QMessageBox.Icon.Warning)
+            box.setWindowTitle("StockLists Variances")
+            box.setText(message)
+            export_btn = box.addButton("Export CSV…", QMessageBox.ButtonRole.ActionRole)
+            override_btn = box.addButton("Override", QMessageBox.ButtonRole.AcceptRole)
+            ignore_btn = box.addButton("Ignore", QMessageBox.ButtonRole.DestructiveRole)
+            box.exec()
+            clicked = box.clickedButton()
+            if clicked == ignore_btn or clicked is None:
+                QMessageBox.information(
+                    self,
+                    "Import Complete",
+                    (
+                        f"Processed {result.items_processed:,} items "
+                        f"({result.qty_changes:,} quantity updates)."
+                    ),
+                )
+                self.accept()
+                return
+            if clicked == export_btn:
+                self._export_differences_csv()
+                continue
+            if clicked == override_btn:
+                self._run_stocklist_override(result, stocklist_path, comparison)
+                return
+
+    def _run_stocklist_override(self, movement_result, stocklist_path: Path, comparison) -> None:
+        variance_lines = list(comparison.variance_lines)
+        source_import_id = movement_result.import_batch_id
+
+        def operation():
+            with get_session() as session:
+                return apply_stocklist_override(
+                    session,
+                    stocklist_path,
+                    variance_lines,
+                    source_import_id=source_import_id,
+                )
+
+        def on_success(override_result) -> None:
+            QMessageBox.information(
+                self,
+                "Import Complete",
+                (
+                    f"Processed {movement_result.items_processed:,} movement items "
+                    f"({movement_result.qty_changes:,} quantity updates).\n"
+                    f"StockLists override applied: {override_result.items_updated:,} quantities "
+                    f"updated ({override_result.new_items:,} new items)."
+                ),
+            )
+            self.accept()
+
+        def on_error(message: str) -> None:
+            QMessageBox.critical(self, "Override Failed", message)
+
+        run_in_background(
+            self,
+            operation_builder=lambda _progress, _cancel: operation,
+            title="Applying StockLists override…",
+            maximum=0,
+            on_success=on_success,
+            on_error=on_error,
+        )
 
     def _do_import(self) -> None:
         if not self._sales_path or not self._purchases_path:
@@ -326,6 +632,14 @@ class MovementImportWizard(QDialog):
             if backdate_confirm != QMessageBox.StandardButton.Yes:
                 return
 
+        try:
+            parsed = merge_movement_reports(self._sales_path, self._purchases_path)
+        except Exception as exc:
+            QMessageBox.critical(self, "Parse Error", str(exc))
+            return
+        if not self._warn_if_negative_qty(parsed.rows):
+            return
+
         sales_path = self._sales_path
         purchases_path = self._purchases_path
         period_start = start
@@ -336,15 +650,19 @@ class MovementImportWizard(QDialog):
             return self._on_import(sales_path, purchases_path, period_start, period_end)
 
         def on_success(result) -> None:
-            QMessageBox.information(
-                self,
-                "Import Complete",
-                (
-                    f"Processed {result.items_processed:,} items "
-                    f"({result.qty_changes:,} quantity updates)."
-                ),
-            )
-            self.accept()
+            stocklist_path = self._stocklist_path
+            if stocklist_path is not None:
+                try:
+                    parsed = parse_stocklist_file(stocklist_path)
+                    with get_session() as session:
+                        apply_stocklist_pricing(session, parsed)
+                except Exception as exc:
+                    QMessageBox.warning(
+                        self,
+                        "Stocklist Pricing",
+                        f"Movement imported but pricing update failed: {exc}",
+                    )
+            self._handle_post_import_variances(result)
 
         def on_error(message: str) -> None:
             self._confirm.setEnabled(True)
@@ -403,16 +721,13 @@ def run_enrichment_wizard(
 
         def on_import(sales_path, purchases_path, period_start, period_end):
             with get_session() as session:
-                try:
-                    return apply_baseline_alignment(
-                        session,
-                        sales_path,
-                        purchases_path,
-                        period_start=period_start,
-                        period_end=period_end,
-                    )
-                except BackdateValidationError as exc:
-                    raise RuntimeError(str(exc)) from exc
+                return apply_baseline_alignment(
+                    session,
+                    sales_path,
+                    purchases_path,
+                    period_start=period_start,
+                    period_end=period_end,
+                )
 
         config = _build_config(
             title="Import Movement Period (Step 2)",
@@ -453,6 +768,7 @@ def run_enrichment_wizard(
             initial_to=initial_to,
             intro_override=intro_override,
             use_closing_defaults=True,
+            enable_stocklist_compare=True,
         )
     return _run_wizard(parent, config, on_import)
 
@@ -478,6 +794,7 @@ def run_period_import_wizard(parent) -> bool:
         direction="forward",
         require_baseline=True,
         use_closing_defaults=True,
+        enable_stocklist_compare=True,
     )
     return _run_wizard(parent, config, on_import)
 
@@ -487,16 +804,13 @@ def run_backdate_import_wizard(parent) -> bool:
 
     def on_import(sales_path, purchases_path, period_start, period_end):
         with get_session() as session:
-            try:
-                return apply_backdate_import(
-                    session,
-                    sales_path,
-                    purchases_path,
-                    period_start=period_start,
-                    period_end=period_end,
-                )
-            except BackdateValidationError as exc:
-                raise RuntimeError(str(exc)) from exc
+            return apply_backdate_import(
+                session,
+                sales_path,
+                purchases_path,
+                period_start=period_start,
+                period_end=period_end,
+            )
 
     return _run_wizard(
         parent,

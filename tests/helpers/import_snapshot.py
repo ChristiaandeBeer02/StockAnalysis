@@ -182,12 +182,12 @@ def _round_float(value: Any) -> Any:
 def _sort_summary_lists(summary: dict[str, Any]) -> dict[str, Any]:
     result = dict(summary)
     result.pop("batch_id", None)
-    for key in ("top_sellers", "sales_items", "reorder_alerts", "overstock_alerts", "margin_alerts", "markup_alerts", "slow_moving_items"):
+    for key in ("top_sellers", "sales_items", "reorder_alerts", "overstock_alerts", "margin_alerts", "markup_alerts", "slow_moving_items", "dead_stock_items"):
         if key in result and isinstance(result[key], list):
             result[key] = sorted(result[key], key=lambda row: row.get("code", ""))
     if "dept_values" in result:
         result["dept_values"] = dict(sorted(result["dept_values"].items()))
-    for key in ("dept_overstock_values", "dept_slow_moving_values"):
+    for key in ("dept_overstock_values", "dept_slow_moving_values", "dept_dead_stock_values"):
         if key in result:
             result[key] = dict(sorted(result[key].items()))
     if "stock_health" in result and isinstance(result["stock_health"], dict):

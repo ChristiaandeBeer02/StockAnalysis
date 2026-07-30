@@ -20,8 +20,10 @@ from sqlalchemy import delete, desc, func, select, update
 from sqlalchemy.orm import Session
 
 from stock_analysis.analytics.dashboard import build_period_summary, save_analysis_result
+from stock_analysis.analytics.movement_projection import compute_new_qty, project_post_movement_on_hand
 from stock_analysis.analytics.metrics import effective_unit_cost_expr
 from stock_analysis.analytics.stock_take import StockTakeComparison, compare_stock_take
+from stock_analysis.analytics.stocklist_compare import StocklistComparison, StocklistVarianceLine
 from stock_analysis.baseline.change_log import log_change
 from stock_analysis.db.models import (
     AnalysisResult,
@@ -56,16 +58,6 @@ from stock_analysis.importers.stocklist_parser import StocklistParseResult, pars
 
 class ImportCancelledError(Exception):
     """Raised when a long-running import is cancelled by the user."""
-
-
-class BackdateValidationError(Exception):
-    """Raised when a backdate import would push any SKU below zero."""
-
-    def __init__(self, skus: list[str]):
-        self.skus = skus
-        preview = ", ".join(skus[:10])
-        suffix = f" (+{len(skus) - 10} more)" if len(skus) > 10 else ""
-        super().__init__(f"Backdate import would push {len(skus)} SKU(s) below zero: {preview}{suffix}")
 
 
 _IMPORT_STATE_KEYS = (
@@ -272,9 +264,27 @@ def _compute_new_qty(
     *,
     direction: Literal["forward", "backward"],
 ) -> float:
-    if direction == "backward":
-        return opening + row.net_sales_qty - row.net_purchases_qty
-    return opening - row.net_sales_qty + row.net_purchases_qty
+    return compute_new_qty(opening, row, direction=direction)
+
+
+def find_negative_qty_skus(
+    session: Session,
+    rows: list[MovementRow],
+    *,
+    direction: Literal["forward", "backward"],
+) -> list[str]:
+    """Return SKUs whose on-hand would fall below zero after applying movement in direction."""
+    sku_map = {item.sku: item for item in session.scalars(select(Item))}
+    baseline_map = {row.item_id: row for row in session.scalars(select(BaselineItem))}
+    negative_skus: list[str] = []
+    for row in rows:
+        if should_skip_item(row.code, row.description):
+            continue
+        item = sku_map.get(row.code)
+        opening = baseline_map.get(item.id).qty_on_hand if item and item.id in baseline_map else 0.0
+        if _compute_new_qty(opening, row, direction=direction) < -0.0001:
+            negative_skus.append(row.code)
+    return sorted(negative_skus)
 
 
 def _store_movement_line(
@@ -303,7 +313,6 @@ def _store_movement_line(
             returns_qty=row.returns_qty,
             net_sales_revenue=row.net_sales_revenue,
             gross_profit=row.gross_profit,
-            gross_margin_pct=row.gross_margin_pct,
         )
     )
 
@@ -359,18 +368,6 @@ def apply_movement_import(
 
     sku_map = {item.sku: item for item in session.scalars(select(Item))}
     baseline_map = {row.item_id: row for row in session.scalars(select(BaselineItem))}
-
-    if update_baseline and direction == "backward":
-        negative_skus: list[str] = []
-        for row in merged:
-            if should_skip_item(row.code, row.description):
-                continue
-            item = sku_map.get(row.code)
-            opening = baseline_map.get(item.id).qty_on_hand if item and item.id in baseline_map else 0.0
-            if _compute_new_qty(opening, row, direction=direction) < -0.0001:
-                negative_skus.append(row.code)
-        if negative_skus:
-            raise BackdateValidationError(sorted(negative_skus))
 
     for index, row in enumerate(merged):
         if should_skip_item(row.code, row.description):
@@ -571,6 +568,22 @@ def _department_empty(department: str | None) -> bool:
     return department is None or department.strip() == ""
 
 
+def apply_stocklist_pricing(session: Session, parsed: StocklistParseResult) -> int:
+    """Apply GP_1 / MARKUP_1 from a stocklist to matching inventory items."""
+    sku_map = {item.sku: item for item in session.scalars(select(Item))}
+    items_updated = 0
+    for row in parsed.rows:
+        item = sku_map.get(row.code)
+        if item is None:
+            continue
+        if row.gross_margin_pct is not None:
+            item.gross_margin_pct = row.gross_margin_pct
+        if row.markup_pct is not None:
+            item.markup_pct = row.markup_pct
+        items_updated += 1
+    return items_updated
+
+
 @dataclass
 class StocklistDepartmentImportSummary:
     import_batch_id: int
@@ -635,6 +648,8 @@ def apply_stocklist_departments(
         if progress_callback is not None:
             progress_callback(index + 1, total_rows)
 
+    apply_stocklist_pricing(session, parsed)
+
     items_without_department = sum(
         1
         for item in sku_map.values()
@@ -649,6 +664,163 @@ def apply_stocklist_departments(
         csv_unmatched_skus=csv_unmatched_skus,
         items_without_department=items_without_department,
     )
+
+
+@dataclass
+class StocklistOverrideSummary:
+    import_batch_id: int
+    baseline_version: int
+    items_updated: int
+    new_items: int
+    skipped: int
+
+
+def apply_stocklist_override(
+    session: Session,
+    stocklist_path: Path,
+    variance_lines: list[StocklistVarianceLine],
+    *,
+    source_import_id: int | None = None,
+) -> StocklistOverrideSummary:
+    if not has_initial_baseline(session):
+        raise ValueError("Import initial baseline before applying StockLists override.")
+
+    applicable = [
+        line for line in variance_lines if line.line_type != "missing_from_stocklist"
+    ]
+    skipped = len(variance_lines) - len(applicable)
+
+    batch = ImportBatch(
+        import_type="stocklist_override",
+        file_name=stocklist_path.name,
+        row_count=len(applicable),
+        status="applied",
+    )
+    session.add(batch)
+    session.flush()
+
+    version_number = _next_version_number(session)
+    notes = f"StockLists override from {stocklist_path.name}"
+    if source_import_id is not None:
+        notes = f"{notes} (movement batch {source_import_id})"
+    version = BaselineVersion(
+        version_number=version_number,
+        source_type="stocklist_override",
+        source_import_id=batch.id,
+        notes=notes,
+    )
+    session.add(version)
+    session.flush()
+
+    sku_map = {item.sku: item for item in session.scalars(select(Item))}
+    baseline_map = {row.item_id: row for row in session.scalars(select(BaselineItem))}
+    items_updated = 0
+    new_items = 0
+
+    for index, line in enumerate(applicable):
+        item = sku_map.get(line.sku)
+        if item is None:
+            item = Item(sku=line.sku, name=line.name)
+            session.add(item)
+            session.flush()
+            sku_map[line.sku] = item
+            new_items += 1
+
+        new_qty = line.stocklist_qty
+        baseline = baseline_map.get(item.id)
+        if baseline is None:
+            baseline = BaselineItem(
+                item_id=item.id,
+                qty_on_hand=new_qty,
+                baseline_version_id=version.id,
+                last_update_source="stocklist_override",
+            )
+            session.add(baseline)
+            baseline_map[item.id] = baseline
+            log_change(
+                session,
+                item_id=item.id,
+                baseline_version_id=version.id,
+                field_changed="qty_on_hand",
+                old_value=None,
+                new_value=str(new_qty),
+                change_reason="stocklist_override",
+                source_type="stocklist_override",
+                source_import_id=batch.id,
+            )
+            items_updated += 1
+        elif baseline.qty_on_hand != new_qty:
+            log_change(
+                session,
+                item_id=item.id,
+                baseline_version_id=version.id,
+                field_changed="qty_on_hand",
+                old_value=str(baseline.qty_on_hand),
+                new_value=str(new_qty),
+                change_reason="stocklist_override",
+                source_type="stocklist_override",
+                source_import_id=batch.id,
+            )
+            baseline.qty_on_hand = new_qty
+            baseline.baseline_version_id = version.id
+            baseline.last_update_source = "stocklist_override"
+            items_updated += 1
+        else:
+            baseline.baseline_version_id = version.id
+            baseline.last_update_source = "stocklist_override"
+
+        if (index + 1) % 500 == 0:
+            session.flush()
+
+    return StocklistOverrideSummary(
+        import_batch_id=batch.id,
+        baseline_version=version_number,
+        items_updated=items_updated,
+        new_items=new_items,
+        skipped=skipped,
+    )
+
+
+def update_item_on_hand(session: Session, item_id: int, qty_on_hand: int) -> bool:
+    """Set baseline on-hand for one item. Returns True if the stored value changed."""
+    if qty_on_hand < 0:
+        raise ValueError("On-hand quantity cannot be negative")
+
+    item = session.get(Item, item_id)
+    if not item:
+        raise ValueError("Item not found")
+
+    baseline = session.scalar(select(BaselineItem).where(BaselineItem.item_id == item_id))
+    if baseline is None:
+        raise ValueError("Item has no baseline")
+
+    new_qty = float(qty_on_hand)
+    if baseline.qty_on_hand == new_qty:
+        return False
+
+    version_number = _next_version_number(session)
+    version = BaselineVersion(
+        version_number=version_number,
+        source_type="manual_edit",
+        notes="Manual on-hand edit",
+    )
+    session.add(version)
+    session.flush()
+
+    log_change(
+        session,
+        item_id=item_id,
+        baseline_version_id=version.id,
+        field_changed="qty_on_hand",
+        old_value=str(baseline.qty_on_hand),
+        new_value=str(new_qty),
+        change_reason="manual_edit",
+        source_type="manual_edit",
+    )
+    baseline.qty_on_hand = new_qty
+    baseline.baseline_version_id = version.id
+    baseline.last_update_source = "manual_edit"
+    return True
 
 
 def remove_deprecated_items(session: Session) -> int:

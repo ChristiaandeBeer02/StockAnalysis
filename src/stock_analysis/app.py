@@ -129,6 +129,15 @@ QPushButton#slicerChip:checked {
     font-weight: 600;
     color: #111827;
 }
+#kpiCard QSpinBox {
+    font-size: 22px;
+    font-weight: 600;
+    color: #111827;
+    border: 1px solid #e0e3eb;
+    border-radius: 4px;
+    padding: 2px 6px;
+    background: #ffffff;
+}
 #banner {
     background-color: #fff8e6;
     border: 1px solid #f0d78c;

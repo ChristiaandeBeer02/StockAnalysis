@@ -6,6 +6,7 @@ import csv
 from dataclasses import dataclass
 from pathlib import Path
 
+from stock_analysis.importers.iq_retail_parser import parse_float
 from stock_analysis.importers.item_filters import should_skip_item
 
 
@@ -14,6 +15,9 @@ class StocklistRow:
     code: str
     description: str
     department: str
+    on_hand: float = 0.0
+    gross_margin_pct: float | None = None
+    markup_pct: float | None = None
 
 
 @dataclass
@@ -54,7 +58,21 @@ def _has_column(rows: list[dict[str, str]], *names: str) -> bool:
     return any(name in keys for name in names)
 
 
-def parse_stocklist_file(path: Path) -> StocklistParseResult:
+def _parse_on_hand(raw: dict[str, str]) -> float:
+    value = _field(raw, "ONHAND", "OnHand", "Onhand")
+    if not value:
+        return 0.0
+    return parse_float(value)
+
+
+def _parse_optional_float(raw: dict[str, str], *names: str) -> float | None:
+    value = _field(raw, *names)
+    if not value:
+        return None
+    return parse_float(value)
+
+
+def parse_stocklist_file(path: Path, *, require_on_hand: bool = False) -> StocklistParseResult:
     raw_rows = _read_csv_dicts(path)
     if not raw_rows:
         raise ValueError("Stocklist file is empty.")
@@ -63,6 +81,8 @@ def parse_stocklist_file(path: Path) -> StocklistParseResult:
         raise ValueError("Stocklist file is missing required CODE column.")
     if not _has_column(raw_rows, "SUBDEPARTM", "SubDepartm"):
         raise ValueError("Stocklist file is missing required SUBDEPARTM column.")
+    if require_on_hand and not _has_column(raw_rows, "ONHAND", "OnHand", "Onhand"):
+        raise ValueError("Stocklist file is missing required ONHAND column.")
 
     parsed: list[StocklistRow] = []
     junk_rows = 0
@@ -78,6 +98,9 @@ def parse_stocklist_file(path: Path) -> StocklistParseResult:
                 code=code,
                 description=description,
                 department=department,
+                on_hand=_parse_on_hand(raw),
+                gross_margin_pct=_parse_optional_float(raw, "GP_1", "Gp_1"),
+                markup_pct=_parse_optional_float(raw, "MARKUP_1", "Markup_1"),
             )
         )
 

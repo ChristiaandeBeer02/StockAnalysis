@@ -15,10 +15,23 @@ from stock_analysis.analytics.dashboard import (
     list_period_batches,
 )
 from stock_analysis.analytics.lookback import build_multi_batch_qty_map, item_qty_sold
-from stock_analysis.analytics.metrics import effective_on_hand, stock_position_from_weekly_sales
-from stock_analysis.analytics.queries import baseline_qty_map, get_optimum_stock_months
+from stock_analysis.analytics.metrics import (
+    effective_on_hand,
+    stock_position_from_holding_policy,
+)
+from stock_analysis.analytics.queries import (
+    baseline_qty_map,
+    get_holding_weeks,
+    get_stock_buffer_pct_range,
+)
 from stock_analysis.analytics.pivot import build_pivot
-from stock_analysis.analytics.reports import abc_report, slow_moving_report, understocked_report
+from stock_analysis.analytics.reports import (
+    abc_report,
+    dead_stock_report,
+    overstocked_report,
+    slow_moving_report,
+    understocked_report,
+)
 from stock_analysis.baseline.change_log import log_change
 from stock_analysis.baseline.manager import get_baseline_summary
 from stock_analysis.db.models import (
@@ -112,17 +125,27 @@ def test_list_period_batches(db_session):
     assert batches[0]["import_type"] == "baseline_enrichment"
 
 
-def test_slow_moving_report(db_session):
-    report = slow_moving_report(db_session)
+def test_dead_stock_report(db_session):
+    report = dead_stock_report(db_session)
     assert len(report) == 1
     assert report[0]["sku"] == "SLOW001"
+
+
+def test_dead_stock_report_dept_filter(db_session):
+    report = dead_stock_report(db_session, dept_filter="B2")
+    assert len(report) == 1
+    assert report[0]["sku"] == "SLOW001"
+
+    assert dead_stock_report(db_session, dept_filter="A1") == []
+
+
+def test_slow_moving_report(db_session):
+    report = slow_moving_report(db_session)
+    assert report == []
 
 
 def test_slow_moving_report_dept_filter(db_session):
-    report = slow_moving_report(db_session, dept_filter="B2")
-    assert len(report) == 1
-    assert report[0]["sku"] == "SLOW001"
-
+    assert slow_moving_report(db_session, dept_filter="B2") == []
     assert slow_moving_report(db_session, dept_filter="A1") == []
 
 
@@ -148,17 +171,95 @@ def test_understocked_report_units_under_are_ceiled(db_session):
     lines = get_lookback_period_lines(db_session, 1)
     baseline_map = baseline_qty_map(db_session, [item.id for _, item in lines])
     qty_map = build_multi_batch_qty_map(db_session, 1)
-    optimum_months = get_optimum_stock_months(db_session)
+    holding_weeks = get_holding_weeks(db_session)
+    min_pct, max_pct = get_stock_buffer_pct_range(db_session)
 
     by_sku = {item.sku: (line, item) for line, item in lines}
     for row in report:
         line, item = by_sku[row["sku"]]
         on_hand = effective_on_hand(baseline_map, item.id, line.on_hand)
         sold = item_qty_sold(qty_map, item.id)
-        _, under_qty = stock_position_from_weekly_sales(
-            on_hand, sold, 1, optimum_months
+        _, under_qty, _, _ = stock_position_from_holding_policy(
+            on_hand,
+            sold,
+            1,
+            holding_weeks,
+            min_pct,
+            max_pct,
         )
         assert row["units_under"] == math.ceil(abs(under_qty))
+
+
+def test_overstocked_report(db_session):
+    over_item = Item(sku="OVER001", name="Over Stock", department="C1", unit_cost=10.0)
+    db_session.add(over_item)
+    db_session.flush()
+    version = db_session.scalar(select(BaselineVersion).limit(1))
+    batch = db_session.scalar(select(ImportBatch).limit(1))
+    db_session.add(
+        BaselineItem(
+            item_id=over_item.id,
+            qty_on_hand=35.0,
+            baseline_version_id=version.id,
+            last_update_source="initial_import",
+        )
+    )
+    db_session.add(
+        PeriodTurnLine(
+            import_batch_id=batch.id,
+            item_id=over_item.id,
+            dept="C1",
+            on_hand=35.0,
+            qty_sold_90=10.0,
+            last_unit_cost=10.0,
+        )
+    )
+    db_session.commit()
+
+    report = overstocked_report(db_session)
+    assert len(report) == 1
+    row = report[0]
+    assert row["sku"] == "OVER001"
+    assert row["units_over"] > 0
+    assert row["excess_value"] == pytest.approx(row["units_over"] * row["unit_cost"])
+
+
+def test_slow_moving_report_high_cover_item(db_session):
+    over_item = Item(sku="SLOWMOVE", name="Slow Cover", department="C1", unit_cost=10.0)
+    db_session.add(over_item)
+    db_session.flush()
+    version = db_session.scalar(select(BaselineVersion).limit(1))
+    batch = db_session.scalar(select(ImportBatch).limit(1))
+    db_session.add(
+        BaselineItem(
+            item_id=over_item.id,
+            qty_on_hand=100.0,
+            baseline_version_id=version.id,
+            last_update_source="initial_import",
+        )
+    )
+    db_session.add(
+        PeriodTurnLine(
+            import_batch_id=batch.id,
+            item_id=over_item.id,
+            dept="C1",
+            on_hand=100.0,
+            qty_sold_90=10.0,
+            last_unit_cost=10.0,
+        )
+    )
+    db_session.commit()
+
+    report = slow_moving_report(db_session)
+    assert len(report) == 1
+    assert report[0]["sku"] == "SLOWMOVE"
+    assert report[0]["weeks_cover"] == pytest.approx(10.0)
+    assert report[0]["excess_value"] > 0
+
+
+def test_overstocked_report_excludes_slow_movers(db_session):
+    report = overstocked_report(db_session)
+    assert all(row["sku"] != "SLOW001" for row in report)
 
 
 def test_abc_report_classifies_items(db_session):
@@ -235,14 +336,17 @@ def test_build_period_summary(db_session):
     summary = build_period_summary(db_session)
     assert summary["total_sales"] == pytest.approx(120.0)
     assert summary["total_sales_value"] == pytest.approx(580.0)
-    assert summary["slow_moving"] == 1
-    assert summary["slow_moving_value"] == pytest.approx(40.0)
-    slow_items = summary["slow_moving_items"]
-    assert len(slow_items) == 1
-    assert slow_items[0]["unit_cost"] == pytest.approx(2.0)
-    assert slow_items[0]["stock_value"] == pytest.approx(40.0)
+    assert summary["dead_stock"] == 1
+    assert summary["dead_stock_value"] == pytest.approx(40.0)
+    assert summary["slow_moving"] == 0
+    assert summary["slow_moving_value"] == pytest.approx(0.0)
+    dead_items = summary["dead_stock_items"]
+    assert len(dead_items) == 1
+    assert dead_items[0]["unit_cost"] == pytest.approx(2.0)
+    assert dead_items[0]["stock_value"] == pytest.approx(40.0)
+    assert summary["slow_moving_items"] == []
     assert summary["overstock_value"] == pytest.approx(0.0)
-    assert summary["understock_value"] == pytest.approx(4901.428571428571)
+    assert summary["understock_value"] == pytest.approx(1322.0)
 
 
 def test_build_inventory_list_summary_value_fields(db_session):
@@ -255,9 +359,11 @@ def test_build_inventory_list_summary_value_fields(db_session):
     assert summary["overstock_count"] == 0
     assert summary["overstock_value"] == pytest.approx(0.0)
     assert summary["understock_count"] == 2
-    assert summary["understock_value"] == pytest.approx(4901.428571428571)
-    assert summary["slow_moving_count"] == 1
-    assert summary["slow_moving_value"] == pytest.approx(40.0)
+    assert summary["understock_value"] == pytest.approx(1322.0)
+    assert summary["slow_moving_count"] == 0
+    assert summary["slow_moving_value"] == pytest.approx(0.0)
+    assert summary["dead_stock_count"] == 1
+    assert summary["dead_stock_value"] == pytest.approx(40.0)
 
     filtered = build_inventory_list_summary(
         db_session,
@@ -268,8 +374,10 @@ def test_build_inventory_list_summary_value_fields(db_session):
     assert filtered["item_count"] == 1
     assert filtered["overstock_count"] == 0
     assert filtered["overstock_value"] == pytest.approx(0.0)
-    assert filtered["slow_moving_count"] == 1
-    assert filtered["slow_moving_value"] == pytest.approx(40.0)
+    assert filtered["slow_moving_count"] == 0
+    assert filtered["slow_moving_value"] == pytest.approx(0.0)
+    assert filtered["dead_stock_count"] == 1
+    assert filtered["dead_stock_value"] == pytest.approx(40.0)
 
 
 def test_overstock_value_does_not_exceed_baseline_stock_value(db_session):
@@ -301,16 +409,6 @@ def test_overstock_value_does_not_exceed_baseline_stock_value(db_session):
 
 
 def test_overstock_alerts_exclude_understocked_fast_mover(db_session):
-    fast_item = db_session.scalar(select(Item).where(Item.sku == "FAST001"))
-    turn = db_session.scalar(
-        select(PeriodTurnLine).where(PeriodTurnLine.item_id == fast_item.id)
-    )
-    turn.over_stock_qty_3mo = 10.0
-    turn.under_stock_qty_3mo = -20.0
-    turn.avg_monthly_sales_3mo = 30.0
-    turn.on_hand = 10.0
-    db_session.commit()
-
     summary = build_period_summary(db_session)
     codes = {row["code"] for row in summary["overstock_alerts"]}
     assert "FAST001" not in codes
@@ -325,12 +423,14 @@ def test_margin_and_markup_alerts(db_session):
         select(PeriodTurnLine).where(PeriodTurnLine.item_id == fast.id)
     )
     line_fast.net_sales_revenue = 200.0
-    line_fast.gross_profit = 80.0
+    fast.gross_margin_pct = 40.0
+    fast.markup_pct = 66.6666666667
     line_mid = db_session.scalar(
         select(PeriodTurnLine).where(PeriodTurnLine.item_id == mid.id)
     )
     line_mid.net_sales_revenue = 100.0
-    line_mid.gross_profit = 25.0
+    mid.gross_margin_pct = 25.0
+    mid.markup_pct = 33.3333333333
     db_session.commit()
 
     summary = build_period_summary(db_session)
@@ -470,6 +570,36 @@ def test_top_sellers_respects_lookback_weeks(db_session):
     top_2w = {row["code"]: row["qty_sold"] for row in summary_2w["top_sellers"]}
     assert top_1w["FAST001"] == pytest.approx(100.0)
     assert top_2w["FAST001"] == pytest.approx(150.0)
+    assert "gross_profit" in summary_1w["top_sellers"][0]
+
+
+def test_top_sellers_ranked_by_gross_profit(db_session):
+    fast = db_session.scalar(select(Item).where(Item.sku == "FAST001"))
+    mid = db_session.scalar(select(Item).where(Item.sku == "MID001"))
+    line_fast = db_session.scalar(
+        select(PeriodTurnLine).where(PeriodTurnLine.item_id == fast.id)
+    )
+    line_fast.net_sales_revenue = 200.0
+    fast.gross_margin_pct = 40.0
+    line_mid = db_session.scalar(
+        select(PeriodTurnLine).where(PeriodTurnLine.item_id == mid.id)
+    )
+    line_mid.net_sales_revenue = 800.0
+    mid.gross_margin_pct = 62.5
+    db_session.commit()
+
+    summary = build_period_summary(db_session)
+    top_codes = [row["code"] for row in summary["top_sellers"]]
+    assert top_codes[0] == "MID001"
+    assert top_codes[1] == "FAST001"
+
+    mid_row = next(r for r in summary["top_sellers"] if r["code"] == "MID001")
+    assert mid_row["gross_profit"] == pytest.approx(500.0)
+    assert mid_row["qty_sold"] == pytest.approx(20.0)
+
+    sales_codes = [row["code"] for row in summary["sales_items"]]
+    assert sales_codes[0] == "FAST001"
+    assert all("gross_profit" in row for row in summary["sales_items"])
 
 
 def test_reorder_alerts_respects_lookback_weeks(db_session):
@@ -593,11 +723,12 @@ def test_inventory_summary_uses_lookback_period_lines(db_session):
         lookback_weeks=2,
     )
     health = summary["stock_health"]
-    assert health["Slow Moving"] == 1
-    assert summary["slow_moving_value"] == pytest.approx(40.0)
+    assert health["Dead Stock"] == 1
+    assert health["Slow Moving"] == 0
+    assert summary["dead_stock_value"] == pytest.approx(40.0)
 
     period = build_period_summary(db_session, lookback_weeks=2)
-    assert period["slow_moving"] == 1
+    assert period["dead_stock"] == 1
     assert period["total_sales_value"] == pytest.approx(505.0)
 
 

@@ -93,6 +93,15 @@ def _migrate_schema(engine) -> None:
                     )
                 )
 
+        if "items" in {
+            row[0] for row in conn.execute(text("SELECT name FROM sqlite_master WHERE type='table'"))
+        }:
+            item_columns = _table_columns(conn, "items")
+            if "gross_margin_pct" not in item_columns:
+                conn.execute(text("ALTER TABLE items ADD COLUMN gross_margin_pct FLOAT"))
+            if "markup_pct" not in item_columns:
+                conn.execute(text("ALTER TABLE items ADD COLUMN markup_pct FLOAT"))
+
 
 def init_db() -> None:
     from sqlalchemy import text

@@ -100,6 +100,7 @@ class MainWindow(QMainWindow):
         self._inventory.item_detail_requested.connect(self.open_item_detail)
         self._inventory.stock_alert_requested.connect(self._navigate_to_home_stock_alerts)
         self._inventory.slow_moving_requested.connect(self._navigate_to_home_slow_moving)
+        self._inventory.dead_stock_requested.connect(self._navigate_to_home_dead_stock)
         self._inventory._detail.back_requested.connect(self._go_back)
 
         self._status = QStatusBar()
@@ -267,8 +268,8 @@ class MainWindow(QMainWindow):
 
     def _navigate_to_inventory_items(self, dept: str) -> None:
         self._push_nav_state(self._capture_nav_state())
-        self._set_sidebar_index(1)
         self._inventory.set_dept_filter(dept)
+        self._set_sidebar_index(1)
         self._inventory.show_items_tab()
 
     def _navigate_to_home_stock_alerts(self, alert_type: str, dept: object) -> None:
@@ -283,6 +284,13 @@ class MainWindow(QMainWindow):
         self._push_nav_state(self._capture_nav_state())
         self._set_sidebar_index(0)
         self._home.show_slow_moving(
+            dept if isinstance(dept, str) else None,
+        )
+
+    def _navigate_to_home_dead_stock(self, dept: object) -> None:
+        self._push_nav_state(self._capture_nav_state())
+        self._set_sidebar_index(0)
+        self._home.show_dead_stock(
             dept if isinstance(dept, str) else None,
         )
 

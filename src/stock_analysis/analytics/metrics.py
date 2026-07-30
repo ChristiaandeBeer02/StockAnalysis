@@ -7,6 +7,9 @@ from sqlalchemy import case, func
 from stock_analysis.db.models import Item, PeriodTurnLine
 
 DEFAULT_OPTIMUM_STOCK_MONTHS = 2.0
+DEFAULT_HOLDING_WEEKS = 2
+DEFAULT_STOCK_BUFFER_MIN_PCT = 20.0
+DEFAULT_STOCK_BUFFER_MAX_PCT = 30.0
 
 
 def effective_on_hand(baseline_map: dict[int, float], item_id: int, line_on_hand: float) -> float:
@@ -39,6 +42,12 @@ def sales_value(qty_sold_90: float, unit_cost: float) -> float:
 
 def gross_margin_pct(profit: float, revenue: float) -> float:
     return (profit / revenue * 100.0) if revenue else 0.0
+
+
+def gross_profit_from_margin(revenue: float, gross_margin_pct_value: float | None) -> float:
+    if gross_margin_pct_value is None:
+        return 0.0
+    return revenue * (gross_margin_pct_value / 100.0)
 
 
 def markup_pct(profit: float, cost: float) -> float:
@@ -97,20 +106,107 @@ def stock_position_from_weekly_sales(
     )
 
 
+def compute_base_target_qty(
+    total_qty_sold: float,
+    period_weeks: int,
+    holding_weeks: int,
+) -> float:
+    """Target stock from average weekly sales over the period times holding weeks."""
+    period = max(1, period_weeks)
+    hold = max(1, holding_weeks)
+    avg_weekly = total_qty_sold / period
+    return avg_weekly * hold
+
+
+def compute_healthy_band(
+    base_target: float,
+    min_buffer_pct: float,
+    max_buffer_pct: float,
+) -> tuple[float, float]:
+    """Return (min_healthy, max_healthy) as base_target × (1 + buffer%)."""
+    min_mult = 1.0 + min_buffer_pct / 100.0
+    max_mult = 1.0 + max_buffer_pct / 100.0
+    return base_target * min_mult, base_target * max_mult
+
+
+def stock_position_from_holding_policy(
+    on_hand: float,
+    total_qty_sold: float,
+    period_weeks: int,
+    holding_weeks: int,
+    min_buffer_pct: float,
+    max_buffer_pct: float,
+) -> tuple[float, float, float, float]:
+    """Return (over_qty, under_qty, min_healthy, max_healthy)."""
+    base_target = compute_base_target_qty(total_qty_sold, period_weeks, holding_weeks)
+    min_healthy, max_healthy = compute_healthy_band(base_target, min_buffer_pct, max_buffer_pct)
+    over_qty = max(0.0, on_hand - max_healthy)
+    under_qty = min(0.0, on_hand - min_healthy)
+    return over_qty, under_qty, min_healthy, max_healthy
+
+
+def weeks_of_cover(on_hand: float, total_qty_sold: float, period_weeks: int) -> float:
+    """Weeks of stock at the item's average weekly sales rate in the lookback window."""
+    period = max(1, period_weeks)
+    avg_weekly = total_qty_sold / period
+    if avg_weekly <= 0:
+        return 0.0
+    return on_hand / avg_weekly
+
+
+def slow_moving_cover_threshold_weeks(holding_weeks: int) -> float:
+    """Cover above this (when overstocked) classifies as slow moving."""
+    return 2.0 * max(1, holding_weeks)
+
+
 def stock_health_category(
     *,
     under_qty: float,
     over_qty: float,
     sold: float,
     on_hand: float,
+    weeks_of_cover: float = 0.0,
+    holding_weeks: int = DEFAULT_HOLDING_WEEKS,
 ) -> str | None:
-    """Exclusive stock health bucket: understock, slow_moving, overstock, or healthy."""
+    """Exclusive stock health bucket: understock, dead, slow_moving, overstock, or healthy."""
     if under_qty < 0:
         return "understocked"
     if sold == 0 and on_hand > 0:
-        return "slow_moving"
+        return "dead"
     if over_qty > 0:
+        if weeks_of_cover > slow_moving_cover_threshold_weeks(holding_weeks):
+            return "slow_moving"
         return "overstocked"
     if on_hand > 0:
         return "healthy"
     return None
+
+
+def item_stock_health(
+    on_hand: float,
+    sold: float,
+    *,
+    lookback_weeks: int,
+    holding_weeks: int,
+    min_buffer_pct: float,
+    max_buffer_pct: float,
+) -> tuple[str | None, float, float, float]:
+    """Return (category, over_qty, under_qty, weeks_of_cover)."""
+    over_qty, under_qty, _, _ = stock_position_from_holding_policy(
+        on_hand,
+        sold,
+        lookback_weeks,
+        holding_weeks,
+        min_buffer_pct,
+        max_buffer_pct,
+    )
+    cover = weeks_of_cover(on_hand, sold, lookback_weeks)
+    category = stock_health_category(
+        under_qty=under_qty,
+        over_qty=over_qty,
+        sold=sold,
+        on_hand=on_hand,
+        weeks_of_cover=cover,
+        holding_weeks=holding_weeks,
+    )
+    return category, over_qty, under_qty, cover

@@ -22,6 +22,8 @@ class Item(Base):
     unit_price: Mapped[float | None] = mapped_column(Float, nullable=True)
     reorder_level: Mapped[float | None] = mapped_column(Float, nullable=True)
     reorder_qty: Mapped[float | None] = mapped_column(Float, nullable=True)
+    gross_margin_pct: Mapped[float | None] = mapped_column(Float, nullable=True)
+    markup_pct: Mapped[float | None] = mapped_column(Float, nullable=True)
     is_deprecated: Mapped[bool] = mapped_column(Boolean, default=False)
     not_in_turn_report: Mapped[bool] = mapped_column(Boolean, default=False)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)

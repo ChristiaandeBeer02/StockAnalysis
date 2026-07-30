@@ -2,6 +2,7 @@
 
 from PySide6.QtWidgets import (
     QCheckBox,
+    QDoubleSpinBox,
     QFormLayout,
     QGroupBox,
     QHBoxLayout,
@@ -14,6 +15,10 @@ from PySide6.QtWidgets import (
 )
 
 from stock_analysis.analytics.cache import invalidate_summaries
+from stock_analysis.analytics.queries import (
+    get_stock_buffer_pct_range,
+    set_stock_buffer_pct_range,
+)
 from stock_analysis.analytics.dashboard_config import get_dashboard_config, save_dashboard_config
 from stock_analysis.analytics.department_names import flush_item_departments
 from stock_analysis.config import APP_NAME, APP_VERSION, get_app_data_dir, get_database_path
@@ -61,17 +66,44 @@ class SettingsPage(QWidget):
         self._show_alerts = QCheckBox("Show stock alerts")
         self._show_sales_tab = QCheckBox("Show sales tab")
         self._show_slow_moving_tab = QCheckBox("Show slow moving tab")
+        self._show_dead_stock_tab = QCheckBox("Show dead stock tab")
         self._show_stock_health = QCheckBox("Show stock health chart")
         dashboard_layout.addWidget(self._show_kpis)
         dashboard_layout.addWidget(self._show_charts)
         dashboard_layout.addWidget(self._show_alerts)
         dashboard_layout.addWidget(self._show_sales_tab)
         dashboard_layout.addWidget(self._show_slow_moving_tab)
+        dashboard_layout.addWidget(self._show_dead_stock_tab)
         dashboard_layout.addWidget(self._show_stock_health)
         save_dashboard = QPushButton("Save Dashboard Layout")
         save_dashboard.clicked.connect(self._save_dashboard)
         dashboard_layout.addWidget(save_dashboard)
         layout.addWidget(dashboard_group)
+
+        holding_group = QGroupBox("Stock holding buffer")
+        holding_layout = QVBoxLayout(holding_group)
+        holding_form = QFormLayout()
+        self._buffer_min_pct = QDoubleSpinBox()
+        self._buffer_min_pct.setRange(0, 500)
+        self._buffer_min_pct.setDecimals(1)
+        self._buffer_min_pct.setSuffix("%")
+        self._buffer_max_pct = QDoubleSpinBox()
+        self._buffer_max_pct.setRange(0, 500)
+        self._buffer_max_pct.setDecimals(1)
+        self._buffer_max_pct.setSuffix("%")
+        holding_form.addRow("Minimum buffer:", self._buffer_min_pct)
+        holding_form.addRow("Maximum buffer:", self._buffer_max_pct)
+        holding_layout.addLayout(holding_form)
+        holding_layout.addWidget(
+            QLabel(
+                "Healthy stock is between target × (1 + min%) and target × (1 + max%). "
+                "Target = average weekly sales × hold weeks."
+            )
+        )
+        save_holding = QPushButton("Save Stock Holding Settings")
+        save_holding.clicked.connect(self._save_stock_holding)
+        holding_layout.addWidget(save_holding)
+        layout.addWidget(holding_group)
 
         self._dept_naming_btn = QPushButton("Department Naming…")
         self._dept_naming_btn.clicked.connect(self._open_department_naming)
@@ -177,9 +209,22 @@ class SettingsPage(QWidget):
                     "show_alerts": self._show_alerts.isChecked(),
                     "show_sales_tab": self._show_sales_tab.isChecked(),
                     "show_slow_moving_tab": self._show_slow_moving_tab.isChecked(),
+                    "show_dead_stock_tab": self._show_dead_stock_tab.isChecked(),
                     "show_stock_health": self._show_stock_health.isChecked(),
                 },
             )
+        if self._on_data_changed:
+            self._on_data_changed()
+
+    def _save_stock_holding(self) -> None:
+        min_pct = self._buffer_min_pct.value()
+        max_pct = self._buffer_max_pct.value()
+        if max_pct < min_pct:
+            max_pct = min_pct
+            self._buffer_max_pct.setValue(max_pct)
+        with get_session() as session:
+            set_stock_buffer_pct_range(session, min_pct, max_pct)
+        invalidate_summaries()
         if self._on_data_changed:
             self._on_data_changed()
 
@@ -224,6 +269,9 @@ class SettingsPage(QWidget):
             config = get_dashboard_config(session)
             closing = get_movement_closing_weekday(session)
             anchor = get_baseline_anchor_date(session)
+            min_pct, max_pct = get_stock_buffer_pct_range(session)
+        self._buffer_min_pct.setValue(min_pct)
+        self._buffer_max_pct.setValue(max_pct)
         self._baseline_as_of_label.setText(format_baseline_as_of_label(anchor, closing))
         self._closing_day_label.setText(
             weekday_name(closing) if closing is not None else "Not set"
@@ -233,4 +281,5 @@ class SettingsPage(QWidget):
         self._show_alerts.setChecked(config.get("show_alerts", True))
         self._show_sales_tab.setChecked(config.get("show_sales_tab", True))
         self._show_slow_moving_tab.setChecked(config.get("show_slow_moving_tab", True))
+        self._show_dead_stock_tab.setChecked(config.get("show_dead_stock_tab", True))
         self._show_stock_health.setChecked(config.get("show_stock_health", True))

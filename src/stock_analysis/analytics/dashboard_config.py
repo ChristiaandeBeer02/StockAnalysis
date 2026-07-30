@@ -16,6 +16,7 @@ DEFAULT_CONFIG = {
     "show_alerts": True,
     "show_sales_tab": True,
     "show_slow_moving_tab": True,
+    "show_dead_stock_tab": True,
     "show_stock_health": True,
 }
 

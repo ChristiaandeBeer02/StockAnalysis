@@ -18,8 +18,22 @@ def test_parse_stocklist_sample() -> None:
 
     by_code = {row.code: row for row in result.rows}
     assert by_code["SKU001"].department == "T001"
+    assert by_code["SKU001"].on_hand == pytest.approx(5.0)
+    assert by_code["SKU001"].gross_margin_pct == pytest.approx(10.0)
+    assert by_code["SKU001"].markup_pct == pytest.approx(15.0)
     assert by_code["SKU002"].department == "N001"
+    assert by_code["SKU002"].on_hand == pytest.approx(3.0)
     assert "* 15582" not in by_code
+
+
+def test_parse_stocklist_require_on_hand(tmp_path: Path) -> None:
+    path = tmp_path / "no_onhand.csv"
+    path.write_text(
+        '"CODE","DESCRIPT","SUBDEPARTM"\n"SKU001","Item One","T001"\n',
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="ONHAND"):
+        parse_stocklist_file(path, require_on_hand=True)
 
 
 def test_parse_stocklist_missing_subdepartm(tmp_path: Path) -> None:

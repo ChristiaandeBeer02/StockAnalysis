@@ -15,11 +15,13 @@ from PySide6.QtWidgets import (
 
 from stock_analysis.analytics.inventory_queries import list_item_departments
 from stock_analysis.analytics.department_names import display_dept, load_nickname_map
-from stock_analysis.analytics.lookback import under_qty_label, qty_column_label
+from stock_analysis.analytics.lookback import under_qty_label, over_qty_label, qty_column_label
 from stock_analysis.analytics.pivot import ROW_FIELDS, build_pivot, value_fields_for_lookback
 from stock_analysis.analytics.reports import (
     abc_report,
     abc_summary,
+    dead_stock_report,
+    overstocked_report,
     report_period_label,
     slow_moving_report,
     understocked_report,
@@ -81,6 +83,10 @@ class ReportsPage(QWidget):
         self._tabs = QTabWidget()
         self._slow_table = DataTable()
         self._slow_table.set_headers(
+            ["SKU", "Name", "Dept", "On Hand", "Over Qty", "Weeks Cover", "Excess Value"]
+        )
+        self._dead_table = DataTable()
+        self._dead_table.set_headers(
             ["SKU", "Name", "Dept", "On Hand", "Unit Cost", "Stock Value"]
         )
         self._abc_table = DataTable()
@@ -91,8 +97,25 @@ class ReportsPage(QWidget):
         self._pivot_table = DataTable()
         self._understock_table = DataTable()
         self._understock_table.set_headers(
-            ["SKU", "Name", "Dept", "On Hand", "Under Qty (1w)", "Est. Purchase Cost"]
+            ["SKU", "Name", "Dept", "On Hand", "Under Qty", "Est. Purchase Cost"]
         )
+        self._overstock_table = DataTable()
+        self._overstock_table.set_headers(
+            ["SKU", "Name", "Dept", "On Hand", "Over Qty", "Excess Value"]
+        )
+
+        dead_tab = QWidget()
+        dead_layout = QVBoxLayout(dead_tab)
+        dead_toolbar = QHBoxLayout()
+        dead_export_xlsx = QPushButton("Export Excel…")
+        dead_export_pdf = QPushButton("Export PDF…")
+        dead_export_xlsx.clicked.connect(lambda: self._export_dead("excel"))
+        dead_export_pdf.clicked.connect(lambda: self._export_dead("pdf"))
+        dead_toolbar.addStretch()
+        dead_toolbar.addWidget(dead_export_xlsx)
+        dead_toolbar.addWidget(dead_export_pdf)
+        dead_layout.addLayout(dead_toolbar)
+        dead_layout.addWidget(self._dead_table)
 
         slow_tab = QWidget()
         slow_layout = QVBoxLayout(slow_tab)
@@ -156,10 +179,25 @@ class ReportsPage(QWidget):
         understock_layout.addLayout(understock_toolbar)
         understock_layout.addWidget(self._understock_table)
 
+        overstock_tab = QWidget()
+        overstock_layout = QVBoxLayout(overstock_tab)
+        overstock_toolbar = QHBoxLayout()
+        overstock_export_xlsx = QPushButton("Export Excel…")
+        overstock_export_pdf = QPushButton("Export PDF…")
+        overstock_export_xlsx.clicked.connect(lambda: self._export_overstock("excel"))
+        overstock_export_pdf.clicked.connect(lambda: self._export_overstock("pdf"))
+        overstock_toolbar.addStretch()
+        overstock_toolbar.addWidget(overstock_export_xlsx)
+        overstock_toolbar.addWidget(overstock_export_pdf)
+        overstock_layout.addLayout(overstock_toolbar)
+        overstock_layout.addWidget(self._overstock_table)
+
+        self._tabs.addTab(dead_tab, "Dead Stock")
         self._tabs.addTab(slow_tab, "Slow Moving")
         self._tabs.addTab(abc_tab, "ABC Analysis")
         self._tabs.addTab(pivot_tab, "Pivot")
         self._tabs.addTab(understock_tab, "Understocked")
+        self._tabs.addTab(overstock_tab, "Overstocked")
         self._tabs.currentChanged.connect(self._reload_active_tab)
         content_layout.addWidget(self._tabs)
 
@@ -167,10 +205,12 @@ class ReportsPage(QWidget):
         layout.addWidget(self._content)
 
         self._slow_rows: list[list] = []
+        self._dead_rows: list[list] = []
         self._abc_rows: list[list] = []
         self._pivot_headers: list[str] = []
         self._pivot_rows: list[list] = []
         self._understock_rows: list[list] = []
+        self._overstock_rows: list[list] = []
         self._nickname_map: dict[str, str] = {}
         self._dept_filter: str | None = None
 
@@ -207,8 +247,8 @@ class ReportsPage(QWidget):
             return ""
         return f" · Dept: {display_dept(self._dept_filter, self._nickname_map)}"
 
-    def _configure_slow_table_columns(self) -> None:
-        header = self._slow_table.horizontalHeader()
+    def _configure_dead_table_columns(self) -> None:
+        header = self._dead_table.horizontalHeader()
         header.setStretchLastSection(False)
         header.setSectionResizeMode(QHeaderView.ResizeMode.Fixed)
         header.setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
@@ -217,6 +257,18 @@ class ReportsPage(QWidget):
         header.resizeSection(3, 80)
         header.resizeSection(4, 100)
         header.resizeSection(5, 100)
+
+    def _configure_slow_table_columns(self) -> None:
+        header = self._slow_table.horizontalHeader()
+        header.setStretchLastSection(False)
+        header.setSectionResizeMode(QHeaderView.ResizeMode.Fixed)
+        header.setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
+        header.resizeSection(0, 100)
+        header.resizeSection(2, 72)
+        header.resizeSection(3, 80)
+        header.resizeSection(4, 80)
+        header.resizeSection(5, 90)
+        header.resizeSection(6, 100)
 
     def _configure_abc_table_columns(self) -> None:
         header = self._abc_table.horizontalHeader()
@@ -232,6 +284,17 @@ class ReportsPage(QWidget):
 
     def _configure_understock_table_columns(self) -> None:
         header = self._understock_table.horizontalHeader()
+        header.setStretchLastSection(False)
+        header.setSectionResizeMode(QHeaderView.ResizeMode.Fixed)
+        header.setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
+        header.resizeSection(0, 100)
+        header.resizeSection(2, 72)
+        header.resizeSection(3, 80)
+        header.resizeSection(4, 100)
+        header.resizeSection(5, 120)
+
+    def _configure_overstock_table_columns(self) -> None:
+        header = self._overstock_table.horizontalHeader()
         header.setStretchLastSection(False)
         header.setSectionResizeMode(QHeaderView.ResizeMode.Fixed)
         header.setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
@@ -278,15 +341,49 @@ class ReportsPage(QWidget):
                 "Est. Purchase Cost",
             ]
         )
+        self._overstock_table.set_headers(
+            [
+                "SKU",
+                "Name",
+                "Dept",
+                "On Hand",
+                over_qty_label(self._lookback_weeks),
+                "Excess Value",
+            ]
+        )
         tab = self._tabs.currentIndex()
         if tab == 0:
-            self._load_slow_moving()
+            self._load_dead_stock()
         elif tab == 1:
-            self._load_abc()
+            self._load_slow_moving()
         elif tab == 2:
-            self._load_pivot()
+            self._load_abc()
         elif tab == 3:
+            self._load_pivot()
+        elif tab == 4:
             self._load_understocked()
+        elif tab == 5:
+            self._load_overstocked()
+
+    def _load_dead_stock(self) -> None:
+        with get_session() as session:
+            self._nickname_map = load_nickname_map(session)
+            report = dead_stock_report(
+                session, self._lookback_weeks, dept_filter=self._dept_filter
+            )
+        self._dead_rows = [
+            [
+                row["sku"],
+                row["name"],
+                display_dept(row["dept"], self._nickname_map),
+                f"{row['on_hand']:g}",
+                f"R {row['unit_cost']:,.2f}",
+                f"R {row['stock_value']:,.2f}",
+            ]
+            for row in report
+        ]
+        self._dead_table.set_rows(self._dead_rows)
+        self._configure_dead_table_columns()
 
     def _load_slow_moving(self) -> None:
         with get_session() as session:
@@ -300,8 +397,9 @@ class ReportsPage(QWidget):
                 row["name"],
                 display_dept(row["dept"], self._nickname_map),
                 f"{row['on_hand']:g}",
-                f"R {row['unit_cost']:,.2f}",
-                f"R {row['stock_value']:,.2f}",
+                f"{row['over_qty']:g}",
+                f"{row['weeks_cover']:.1f}",
+                f"R {row['excess_value']:,.2f}",
             ]
             for row in report
         ]
@@ -375,8 +473,48 @@ class ReportsPage(QWidget):
         self._understock_table.set_rows(self._understock_rows)
         self._configure_understock_table_columns()
 
-    def _export_slow(self, fmt: str) -> None:
+    def _load_overstocked(self) -> None:
+        with get_session() as session:
+            self._nickname_map = load_nickname_map(session)
+            report = overstocked_report(
+                session, self._lookback_weeks, dept_filter=self._dept_filter
+            )
+        self._overstock_rows = [
+            [
+                row["sku"],
+                row["name"],
+                display_dept(row["dept"], self._nickname_map),
+                f"{row['on_hand']:g}",
+                f"{row['units_over']:.0f}",
+                f"R {row['excess_value']:,.2f}",
+            ]
+            for row in report
+        ]
+        self._overstock_table.set_rows(self._overstock_rows)
+        self._configure_overstock_table_columns()
+
+    def _export_dead(self, fmt: str) -> None:
         headers = ["SKU", "Name", "Dept", "On Hand", "Unit Cost", "Stock Value"]
+        with get_session() as session:
+            title = (
+                f"Dead Stock Report — {report_period_label(session, self._lookback_weeks)}"
+                f"{self._export_title_suffix()}"
+            )
+        if fmt == "excel":
+            prompt_export_excel(self, title, headers, self._dead_rows, "dead_stock.xlsx")
+        else:
+            prompt_export_pdf(self, title, headers, self._dead_rows, "dead_stock.pdf")
+
+    def _export_slow(self, fmt: str) -> None:
+        headers = [
+            "SKU",
+            "Name",
+            "Dept",
+            "On Hand",
+            "Over Qty",
+            "Weeks Cover",
+            "Excess Value",
+        ]
         with get_session() as session:
             title = (
                 f"Slow Moving Report — {report_period_label(session, self._lookback_weeks)}"
@@ -440,6 +578,29 @@ class ReportsPage(QWidget):
         else:
             prompt_export_pdf(
                 self, title, headers, self._understock_rows, "understocked.pdf"
+            )
+
+    def _export_overstock(self, fmt: str) -> None:
+        headers = [
+            "SKU",
+            "Name",
+            "Dept",
+            "On Hand",
+            over_qty_label(self._lookback_weeks),
+            "Excess Value",
+        ]
+        with get_session() as session:
+            title = (
+                f"Overstocked Report — {report_period_label(session, self._lookback_weeks)}"
+                f"{self._export_title_suffix()}"
+            )
+        if fmt == "excel":
+            prompt_export_excel(
+                self, title, headers, self._overstock_rows, "overstocked.xlsx"
+            )
+        else:
+            prompt_export_pdf(
+                self, title, headers, self._overstock_rows, "overstocked.pdf"
             )
 
     def refresh(self) -> None:
