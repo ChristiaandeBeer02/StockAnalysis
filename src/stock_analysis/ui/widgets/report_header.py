@@ -1,6 +1,6 @@
 """Report header band with title, subtitle, and optional controls."""
 
-from PySide6.QtWidgets import QFrame, QHBoxLayout, QLabel, QVBoxLayout, QWidget
+from PySide6.QtWidgets import QFrame, QHBoxLayout, QLabel, QSizePolicy, QVBoxLayout, QWidget
 
 
 class ReportHeader(QFrame):
@@ -13,6 +13,7 @@ class ReportHeader(QFrame):
         super().__init__(parent)
         self.setObjectName("reportHeader")
         self.setFrameShape(QFrame.Shape.StyledPanel)
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Maximum)
 
         layout = QHBoxLayout(self)
         layout.setContentsMargins(16, 12, 16, 12)
@@ -24,6 +25,8 @@ class ReportHeader(QFrame):
         self._subtitle = QLabel(subtitle)
         self._subtitle.setObjectName("tileSubtitle")
         self._subtitle.setVisible(bool(subtitle))
+        for label in (self._title, self._subtitle):
+            label.setSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Fixed)
         left.addWidget(self._title)
         left.addWidget(self._subtitle)
         layout.addLayout(left, stretch=1)
@@ -37,4 +40,6 @@ class ReportHeader(QFrame):
         self._subtitle.setVisible(bool(text))
 
     def add_control(self, widget: QWidget) -> None:
+        if isinstance(widget, QLabel):
+            widget.setSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Fixed)
         self._controls.addWidget(widget)

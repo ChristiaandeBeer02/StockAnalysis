@@ -25,12 +25,20 @@ class DataTable(QTableView):
         self.verticalHeader().setVisible(False)
         self._owns_model = True
 
+    def _viewport_scroll_size_hint(self) -> QSize:
+        header_height = self.horizontalHeader().height() or 32
+        row_height = self.rowHeight(0) if self.model().rowCount() else 28
+        return QSize(0, header_height + row_height + 4)
+
     def minimumSizeHint(self):
         if self._viewport_scroll:
-            header_height = self.horizontalHeader().height() or 32
-            row_height = self.rowHeight(0) if self.model().rowCount() else 28
-            return QSize(0, header_height + row_height + 4)
+            return self._viewport_scroll_size_hint()
         return super().minimumSizeHint()
+
+    def sizeHint(self):
+        if self._viewport_scroll:
+            return self._viewport_scroll_size_hint()
+        return super().sizeHint()
 
     def enable_viewport_scrolling(self) -> None:
         """Scroll inside the table instead of expanding parent layouts."""

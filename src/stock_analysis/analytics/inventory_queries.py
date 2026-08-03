@@ -38,6 +38,7 @@ def inventory_headers(lookback_weeks: int = DEFAULT_LOOKBACK_WEEKS) -> list[str]
         "Dept",
         "On Hand",
         "Unit Cost",
+        "Inc Price",
         sold_column_label(lookback_weeks),
         "Status",
     ]
@@ -160,6 +161,7 @@ def load_inventory_view_data(
         dept_values[dept_key] = dept_values.get(dept_key, 0) + value
 
         unit_cost_str = f"{unit_cost:.2f}" if unit_cost else "—"
+        sell_price_str = f"{item.unit_price:.2f}" if item.unit_price else "—"
         dept_label = display_dept(item.department or (turn.dept if turn else None), nickname_map)
         if turn:
             sold = item_qty_sold(qty_map, item.id)
@@ -179,6 +181,7 @@ def load_inventory_view_data(
                 dept_label,
                 f"{qty:g}",
                 unit_cost_str,
+                sell_price_str,
                 sold_label,
                 status_label,
             ]

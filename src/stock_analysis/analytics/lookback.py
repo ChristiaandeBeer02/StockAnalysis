@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+from datetime import date
+
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from stock_analysis.analytics.movement_periods import suggest_next_backdate_period
 from stock_analysis.db.models import AppState, ImportBatch, PeriodTurnLine
-from stock_analysis.db.session import set_app_state
+from stock_analysis.db.session import get_baseline_anchor_date, get_movement_closing_weekday, set_app_state
 from stock_analysis.importers.iq_retail_parser import parse_report_date
 
 SALES_BATCH_TYPES = ("baseline_enrichment", "period_turn", "period_turn_backdate")
@@ -91,6 +94,31 @@ def list_sales_batches(session: Session) -> list[ImportBatch]:
     result = sorted(batches, key=sort_key, reverse=True)
     session.info["_sales_batches"] = result
     return result
+
+
+def resolve_backdate_default_period(
+    session: Session,
+) -> tuple[date | None, date | None, str | None]:
+    """Suggest the next historical backdate import range from stored movement history."""
+    closing_weekday = get_movement_closing_weekday(session)
+    if closing_weekday is None:
+        return None, None, None
+
+    batches = list_sales_batches(session)
+    if batches:
+        oldest = batches[-1]
+        if not oldest.period_start:
+            return None, None, None
+        reference = parse_report_date(oldest.period_start)
+        intro = "Suggested period is the week before your earliest imported movement."
+    else:
+        reference = get_baseline_anchor_date(session)
+        if reference is None:
+            return None, None, None
+        intro = "Suggested period is the week before your baseline date."
+
+    start, end = suggest_next_backdate_period(reference, closing_weekday)
+    return start, end, intro
 
 
 def get_available_sales_weeks(session: Session) -> int:

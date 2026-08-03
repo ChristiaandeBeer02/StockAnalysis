@@ -98,8 +98,10 @@ def test_apply_stocklist_departments_fill_only(session: Session) -> None:
     assert items["SKU003"].department == "B001"
     assert items["SKU001"].gross_margin_pct == pytest.approx(10.0)
     assert items["SKU001"].markup_pct == pytest.approx(15.0)
+    assert items["SKU001"].unit_price == pytest.approx(172.50)
     assert items["SKU002"].gross_margin_pct == pytest.approx(20.0)
     assert items["SKU002"].markup_pct == pytest.approx(25.0)
+    assert items["SKU002"].unit_price == pytest.approx(287.50)
 
     assert result.items_updated == 1
     assert result.items_already_set == 2

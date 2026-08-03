@@ -21,6 +21,7 @@ def test_parse_stocklist_sample() -> None:
     assert by_code["SKU001"].on_hand == pytest.approx(5.0)
     assert by_code["SKU001"].gross_margin_pct == pytest.approx(10.0)
     assert by_code["SKU001"].markup_pct == pytest.approx(15.0)
+    assert by_code["SKU001"].included_sell_price == pytest.approx(172.50)
     assert by_code["SKU002"].department == "N001"
     assert by_code["SKU002"].on_hand == pytest.approx(3.0)
     assert "* 15582" not in by_code

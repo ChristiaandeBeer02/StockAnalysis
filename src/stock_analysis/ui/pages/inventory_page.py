@@ -656,8 +656,9 @@ class InventoryPage(QWidget):
         header.resizeSection(2, 72)
         header.resizeSection(3, 88)
         header.resizeSection(4, 88)
-        header.resizeSection(5, 80)
-        header.resizeSection(6, 100)
+        header.resizeSection(5, 88)
+        header.resizeSection(6, 80)
+        header.resizeSection(7, 100)
         self._table.setTextElideMode(Qt.TextElideMode.ElideRight)
 
     def _on_list_lookback_changed(self) -> None:

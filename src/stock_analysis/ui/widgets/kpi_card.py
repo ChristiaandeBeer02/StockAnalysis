@@ -1,7 +1,7 @@
 """Reusable KPI summary card."""
 
 from PySide6.QtCore import Qt, Signal
-from PySide6.QtWidgets import QFrame, QLabel, QVBoxLayout
+from PySide6.QtWidgets import QFrame, QLabel, QSizePolicy, QVBoxLayout
 
 
 class KpiCard(QFrame):
@@ -12,6 +12,7 @@ class KpiCard(QFrame):
         self.setObjectName("kpiCard")
         self.setFrameShape(QFrame.Shape.StyledPanel)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Maximum)
         self._filter_key = filter_key
 
         layout = QVBoxLayout(self)
@@ -25,10 +26,13 @@ class KpiCard(QFrame):
         self._delta = QLabel("")
         self._delta.setObjectName("kpiDelta")
         self._delta.hide()
+        for label in (self._title, self._value, self._delta):
+            label.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
 
         layout.addWidget(self._title)
         layout.addWidget(self._value)
         layout.addWidget(self._delta)
+        layout.addStretch(1)
 
     @property
     def filter_key(self) -> str | None:

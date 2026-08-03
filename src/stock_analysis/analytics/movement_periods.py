@@ -66,6 +66,20 @@ def next_regular_period(after: date, closing_weekday: int) -> tuple[date, date]:
     return start, end
 
 
+def previous_regular_period(before: date, closing_weekday: int) -> tuple[date, date]:
+    """Full movement week immediately before ``before``: (closing+1) through closing."""
+    end = before - timedelta(days=1)
+    days_since_closing = (end.weekday() - closing_weekday) % 7
+    end = end - timedelta(days=days_since_closing)
+    start = end - timedelta(days=6)
+    return start, end
+
+
+def suggest_next_backdate_period(before: date, closing_weekday: int) -> tuple[date, date]:
+    """Suggest the next historical backdate import range before ``before``."""
+    return previous_regular_period(before, closing_weekday)
+
+
 def suggest_next_movement_period(
     anchor: date | None,
     closing_weekday: int | None,

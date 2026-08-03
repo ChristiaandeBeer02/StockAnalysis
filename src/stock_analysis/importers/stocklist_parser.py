@@ -18,6 +18,7 @@ class StocklistRow:
     on_hand: float = 0.0
     gross_margin_pct: float | None = None
     markup_pct: float | None = None
+    included_sell_price: float | None = None
 
 
 @dataclass
@@ -101,6 +102,7 @@ def parse_stocklist_file(path: Path, *, require_on_hand: bool = False) -> Stockl
                 on_hand=_parse_on_hand(raw),
                 gross_margin_pct=_parse_optional_float(raw, "GP_1", "Gp_1"),
                 markup_pct=_parse_optional_float(raw, "MARKUP_1", "Markup_1"),
+                included_sell_price=_parse_optional_float(raw, "SELLPINC1", "Sellpinc1"),
             )
         )
 

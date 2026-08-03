@@ -9,6 +9,7 @@ import pytest
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session, sessionmaker
 
+from stock_analysis.analytics.lookback import resolve_backdate_default_period
 from stock_analysis.analytics.movement_periods import suggest_next_movement_period
 from stock_analysis.baseline.manager import (
     apply_backdate_import,
@@ -223,6 +224,43 @@ def test_backdate_import_does_not_change_suggested_alignment_period(
         date(2025, 12, 28),
         date(2026, 1, 1),
     )
+
+
+def test_resolve_backdate_default_period_uses_baseline_when_no_batches(
+    session: Session, fixtures: Path
+) -> None:
+    apply_initial_baseline(session, fixtures / "sthold2.csv")
+    set_movement_closing_weekday(session, 5)
+    session.commit()
+
+    start, end, intro = resolve_backdate_default_period(session)
+
+    assert start == date(2025, 12, 21)
+    assert end == date(2025, 12, 27)
+    assert intro is not None
+    assert "baseline date" in intro
+
+
+def test_resolve_backdate_default_period_uses_oldest_batch(
+    session: Session, fixtures: Path
+) -> None:
+    apply_initial_baseline(session, fixtures / "sthold2.csv")
+    set_movement_closing_weekday(session, 5)
+    apply_enrichment(
+        session,
+        fixtures / "Sales_Detail_sample.csv",
+        fixtures / "PurchasesDetailed_sample.csv",
+        period_start=MOVEMENT_PERIOD_START,
+        period_end=MOVEMENT_PERIOD_END,
+    )
+    session.commit()
+
+    start, end, intro = resolve_backdate_default_period(session)
+
+    assert start == date(2025, 12, 21)
+    assert end == date(2025, 12, 27)
+    assert intro is not None
+    assert "earliest imported movement" in intro
 
 
 def test_period_import_rolls_forward(session: Session, fixtures: Path) -> None:

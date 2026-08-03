@@ -569,7 +569,7 @@ def _department_empty(department: str | None) -> bool:
 
 
 def apply_stocklist_pricing(session: Session, parsed: StocklistParseResult) -> int:
-    """Apply GP_1 / MARKUP_1 from a stocklist to matching inventory items."""
+    """Apply GP_1 / MARKUP_1 / SELLPINC1 from a stocklist to matching inventory items."""
     sku_map = {item.sku: item for item in session.scalars(select(Item))}
     items_updated = 0
     for row in parsed.rows:
@@ -580,6 +580,8 @@ def apply_stocklist_pricing(session: Session, parsed: StocklistParseResult) -> i
             item.gross_margin_pct = row.gross_margin_pct
         if row.markup_pct is not None:
             item.markup_pct = row.markup_pct
+        if row.included_sell_price is not None:
+            item.unit_price = row.included_sell_price
         items_updated += 1
     return items_updated
 

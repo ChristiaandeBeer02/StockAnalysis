@@ -13,6 +13,8 @@ from stock_analysis.analytics.movement_periods import (
     is_catch_up_pending,
     next_regular_period,
     previous_closing_date,
+    previous_regular_period,
+    suggest_next_backdate_period,
     suggest_next_movement_period,
 )
 from stock_analysis.importers.iq_retail_parser import ParseStats
@@ -85,6 +87,27 @@ def test_next_regular_period_after_saturday_close() -> None:
         date(2026, 7, 5),
         date(2026, 7, 11),
     )
+
+
+def test_previous_regular_period_before_sunday_week_start() -> None:
+    before = date(2026, 7, 5)  # Sunday
+    assert previous_regular_period(before, closing_weekday=5) == (
+        date(2026, 6, 28),
+        date(2026, 7, 4),
+    )
+
+
+def test_previous_regular_period_before_baseline_date() -> None:
+    before = date(2026, 1, 1)  # Thursday
+    assert previous_regular_period(before, closing_weekday=5) == (
+        date(2025, 12, 21),
+        date(2025, 12, 27),
+    )
+
+
+def test_suggest_next_backdate_period_delegates_to_previous_regular_period() -> None:
+    before = date(2026, 7, 5)
+    assert suggest_next_backdate_period(before, 5) == previous_regular_period(before, 5)
 
 
 def test_suggest_next_movement_period_returns_alignment_when_misaligned() -> None:

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import csv
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, timedelta
 from pathlib import Path
 
 from PySide6.QtCore import QDate
@@ -20,6 +20,7 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
 )
 
+from stock_analysis.analytics.lookback import resolve_backdate_default_period
 from stock_analysis.analytics.movement_periods import (
     format_report_date,
     is_catch_up_pending,
@@ -59,6 +60,7 @@ class MovementWizardConfig:
     initial_to: date | None = None
     intro_override: str | None = None
     enable_stocklist_compare: bool = False
+    hide_date_picker: bool = False
 
 
 def _format_date(value: date) -> str:
@@ -107,6 +109,10 @@ def _resolve_default_period(session) -> tuple[date | None, date | None, str | No
     return start, end, intro
 
 
+def _resolve_backdate_default_period(session) -> tuple[date | None, date | None, str | None]:
+    return resolve_backdate_default_period(session)
+
+
 def _build_config(
     *,
     title: str,
@@ -120,7 +126,9 @@ def _build_config(
     initial_to: date | None = None,
     intro_override: str | None = None,
     use_closing_defaults: bool = False,
+    use_backdate_defaults: bool = False,
     enable_stocklist_compare: bool = False,
+    hide_date_picker: bool = False,
 ) -> MovementWizardConfig:
     resolved_from = initial_from
     resolved_to = initial_to
@@ -132,7 +140,15 @@ def _build_config(
         if default_from is not None and default_to is not None:
             resolved_from = default_from
             resolved_to = default_to
-        if resolved_intro is None and default_intro is not None:
+        if resolved_intro is None and default_intro is not None and not hide_date_picker:
+            resolved_intro = default_intro
+    elif use_backdate_defaults and resolved_from is None and resolved_to is None:
+        with get_session() as session:
+            default_from, default_to, default_intro = _resolve_backdate_default_period(session)
+        if default_from is not None and default_to is not None:
+            resolved_from = default_from
+            resolved_to = default_to
+        if resolved_intro is None and default_intro is not None and not hide_date_picker:
             resolved_intro = default_intro
 
     return MovementWizardConfig(
@@ -147,6 +163,7 @@ def _build_config(
         initial_to=resolved_to,
         intro_override=resolved_intro,
         enable_stocklist_compare=enable_stocklist_compare,
+        hide_date_picker=hide_date_picker,
     )
 
 
@@ -171,22 +188,35 @@ class MovementImportWizard(QDialog):
         self._intro.setWordWrap(True)
         layout.addWidget(self._intro)
 
-        date_row = QFormLayout()
-        self._from_date = QDateEdit(calendarPopup=True)
-        self._from_date.setDisplayFormat("dd/MM/yyyy")
-        self._to_date = QDateEdit(calendarPopup=True)
-        self._to_date.setDisplayFormat("dd/MM/yyyy")
-        if config.initial_from is not None and config.initial_to is not None:
-            self._from_date.setDate(_date_to_qdate(config.initial_from))
-            self._to_date.setDate(_date_to_qdate(config.initial_to))
+        if config.hide_date_picker:
+            if config.initial_from is not None and config.initial_to is not None:
+                self._period_from = config.initial_from
+                self._period_to = config.initial_to
+            else:
+                today = date.today()
+                self._period_from = today - timedelta(days=7)
+                self._period_to = today - timedelta(days=1)
+            self._from_date = None
+            self._to_date = None
         else:
-            self._from_date.setDate(QDate.currentDate().addDays(-7))
-            self._to_date.setDate(QDate.currentDate().addDays(-1))
-        self._from_date.dateChanged.connect(self._update_intro)
-        self._to_date.dateChanged.connect(self._update_intro)
-        date_row.addRow("From:", self._from_date)
-        date_row.addRow("To:", self._to_date)
-        layout.addLayout(date_row)
+            self._period_from = None
+            self._period_to = None
+            date_row = QFormLayout()
+            self._from_date = QDateEdit(calendarPopup=True)
+            self._from_date.setDisplayFormat("dd/MM/yyyy")
+            self._to_date = QDateEdit(calendarPopup=True)
+            self._to_date.setDisplayFormat("dd/MM/yyyy")
+            if config.initial_from is not None and config.initial_to is not None:
+                self._from_date.setDate(_date_to_qdate(config.initial_from))
+                self._to_date.setDate(_date_to_qdate(config.initial_to))
+            else:
+                self._from_date.setDate(QDate.currentDate().addDays(-7))
+                self._to_date.setDate(QDate.currentDate().addDays(-1))
+            self._from_date.dateChanged.connect(self._update_intro)
+            self._to_date.dateChanged.connect(self._update_intro)
+            date_row.addRow("From:", self._from_date)
+            date_row.addRow("To:", self._to_date)
+            layout.addLayout(date_row)
 
         self._sales_label = QLabel("Sales_Detail file: not selected")
         sales_btn = QPushButton("Select Sales_Detail CSV…")
@@ -259,9 +289,13 @@ class MovementImportWizard(QDialog):
         self._update_intro()
 
     def period_start(self) -> str:
+        if self._config.hide_date_picker:
+            return _format_date(self._period_from)
         return _format_date(_qdate_to_date(self._from_date.date()))
 
     def period_end(self) -> str:
+        if self._config.hide_date_picker:
+            return _format_date(self._period_to)
         return _format_date(_qdate_to_date(self._to_date.date()))
 
     def _intro_body(self) -> str:
@@ -360,7 +394,10 @@ class MovementImportWizard(QDialog):
             self._confirm.setEnabled(False)
             self._clear_stocklist_comparison()
             return
-        if self._from_date.date() > self._to_date.date():
+        if (
+            not self._config.hide_date_picker
+            and self._from_date.date() > self._to_date.date()
+        ):
             self._confirm.setEnabled(False)
             self._clear_stocklist_comparison()
             return
@@ -579,18 +616,21 @@ class MovementImportWizard(QDialog):
 
         start = self.period_start()
         end = self.period_end()
-        if self._from_date.date() > self._to_date.date():
-            QMessageBox.warning(self, "Invalid Dates", "The start date must be on or before the end date.")
-            return
+        if not self._config.hide_date_picker:
+            if self._from_date.date() > self._to_date.date():
+                QMessageBox.warning(
+                    self, "Invalid Dates", "The start date must be on or before the end date."
+                )
+                return
 
-        confirm = QMessageBox.warning(
-            self,
-            "Confirm Period",
-            f"Please make sure the files dates are from {start} to {end}.",
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-        )
-        if confirm != QMessageBox.StandardButton.Yes:
-            return
+            confirm = QMessageBox.warning(
+                self,
+                "Confirm Period",
+                f"Please make sure the files dates are from {start} to {end}.",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            )
+            if confirm != QMessageBox.StandardButton.Yes:
+                return
 
         if self._config.backdate_confirm:
             if self._config.import_type == "period_turn_backdate":
@@ -599,7 +639,11 @@ class MovementImportWizard(QDialog):
                     "Your current on-hand quantities and baseline date will not change.\n\nContinue?"
                 )
             else:
-                end_date = _qdate_to_date(self._to_date.date())
+                end_date = (
+                    self._period_to
+                    if self._config.hide_date_picker
+                    else _qdate_to_date(self._to_date.date())
+                )
                 with get_session() as session:
                     closing = get_movement_closing_weekday(session)
                 aligned = (
@@ -743,6 +787,7 @@ def run_enrichment_wizard(
             initial_to=initial_to,
             intro_override=intro_override,
             use_closing_defaults=True,
+            hide_date_picker=True,
         )
     else:
         from stock_analysis.baseline.manager import apply_enrichment
@@ -769,6 +814,7 @@ def run_enrichment_wizard(
             intro_override=intro_override,
             use_closing_defaults=True,
             enable_stocklist_compare=True,
+            hide_date_picker=True,
         )
     return _run_wizard(parent, config, on_import)
 
@@ -788,19 +834,32 @@ def run_period_import_wizard(parent) -> bool:
 
     config = _build_config(
         title="Import Movement Period",
-        intro="Import sales and purchase movement for the selected date range.",
+        intro="Import sales and purchase movement for the next period.",
         confirm_label="Import Movement",
         import_type="period_turn",
         direction="forward",
         require_baseline=True,
         use_closing_defaults=True,
         enable_stocklist_compare=True,
+        hide_date_picker=True,
     )
     return _run_wizard(parent, config, on_import)
 
 
 def run_backdate_import_wizard(parent) -> bool:
     from stock_analysis.baseline.manager import apply_backdate_import
+
+    with get_session() as session:
+        needs_closing_day = (
+            has_initial_baseline(session)
+            and get_movement_closing_weekday(session) is None
+        )
+
+    if needs_closing_day:
+        from stock_analysis.ui.wizards.movement_closing_dialog import run_closing_day_dialog
+
+        if run_closing_day_dialog(parent) is None:
+            return False
 
     def on_import(sales_path, purchases_path, period_start, period_end):
         with get_session() as session:
@@ -812,16 +871,15 @@ def run_backdate_import_wizard(parent) -> bool:
                 period_end=period_end,
             )
 
-    return _run_wizard(
-        parent,
-        MovementWizardConfig(
-            title="Backdate Import",
-            intro="Import historical sales and purchase data for a past period. Your current on-hand quantities and baseline date will not change.",
-            confirm_label="Backdate Import",
-            import_type="period_turn_backdate",
-            direction="backward",
-            require_baseline=True,
-            backdate_confirm=True,
-        ),
-        on_import,
+    config = _build_config(
+        title="Backdate Import",
+        intro="Import historical sales and purchase data for a past period. Your current on-hand quantities and baseline date will not change.",
+        confirm_label="Backdate Import",
+        import_type="period_turn_backdate",
+        direction="backward",
+        require_baseline=True,
+        backdate_confirm=True,
+        use_backdate_defaults=True,
+        hide_date_picker=True,
     )
+    return _run_wizard(parent, config, on_import)

@@ -91,6 +91,10 @@ QWidget {
     border: 1px solid #d9d9d9;
     border-radius: 4px;
 }
+#dashboardTile QLabel,
+#dashboardTile QWidget {
+    background: transparent;
+}
 #tileTitle {
     font-size: 13px;
     font-weight: 600;
@@ -120,6 +124,9 @@ QPushButton#slicerChip:checked {
     border: 1px solid #d9d9d9;
     border-radius: 4px;
 }
+#reportHeader QLabel {
+    background: transparent;
+}
 #kpiTitle {
     color: #6b7280;
     font-size: 12px;
@@ -128,6 +135,9 @@ QPushButton#slicerChip:checked {
     font-size: 22px;
     font-weight: 600;
     color: #111827;
+}
+#kpiCard QLabel {
+    background: transparent;
 }
 #kpiCard QSpinBox {
     font-size: 22px;

@@ -11,7 +11,6 @@ from stock_analysis.analytics.department_names import display_dept
 from stock_analysis.analytics.metrics import (
     effective_on_hand,
     effective_unit_cost,
-    gross_profit_from_margin,
     item_stock_health,
     sales_value,
     stock_position_from_holding_policy,
@@ -181,8 +180,7 @@ def _sales_row_sort_key(
 ) -> float | tuple[float, float]:
     qty = qty_map[item_id]
     if sort_by == "profit":
-        revenue, _profit = item_sales_totals(sales_totals, item_id)
-        profit = gross_profit_from_margin(revenue, item.gross_margin_pct)
+        _revenue, profit = item_sales_totals(sales_totals, item_id)
         return (profit, qty)
     return qty
 
@@ -357,10 +355,7 @@ def build_period_summary(
             "code": item.sku,
             "name": item.name[:40],
             "qty_sold": qty,
-            "gross_profit": gross_profit_from_margin(
-                item_sales_totals(sales_totals, item.id)[0],
-                item.gross_margin_pct,
-            ),
+            "gross_profit": item_sales_totals(sales_totals, item.id)[1],
         }
         for _line, item, qty in _build_ranked_sales_rows(
             session,
@@ -442,7 +437,7 @@ def build_period_summary(
     for line, item in lines:
         if item.gross_margin_pct is None:
             continue
-        revenue, _profit = item_sales_totals(sales_totals, item.id)
+        revenue, profit = item_sales_totals(sales_totals, item.id)
         if revenue <= 0:
             continue
         margin_alerts.append(
@@ -452,7 +447,7 @@ def build_period_summary(
                 "dept": line.dept or item.department or "Unknown",
                 "qty_sold": _item_qty(line, item.id),
                 "gross_margin_pct": item.gross_margin_pct,
-                "gross_profit": gross_profit_from_margin(revenue, item.gross_margin_pct),
+                "gross_profit": profit,
             }
         )
     margin_alerts.sort(key=lambda x: x["gross_margin_pct"])
@@ -482,10 +477,7 @@ def build_period_summary(
             "dept": (line.dept if line else None) or item.department or "Unknown",
             "qty_sold": qty,
             "sales_value": sales_value(qty, effective_unit_cost(line, item)),
-            "gross_profit": gross_profit_from_margin(
-                item_sales_totals(sales_totals, item.id)[0],
-                item.gross_margin_pct,
-            ),
+            "gross_profit": item_sales_totals(sales_totals, item.id)[1],
         }
         for line, item, qty in _build_ranked_sales_rows(
             session, lines, qty_map, sales_totals=sales_totals, sort_by="qty"

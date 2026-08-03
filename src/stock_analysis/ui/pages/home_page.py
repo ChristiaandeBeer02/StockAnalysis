@@ -482,6 +482,7 @@ class HomePage(QWidget):
         self._dash_layout = dash
         dash.addWidget(self._dashboard_header, 0, 0, 1, 6)
         dash.addWidget(self._tabs, 1, 0, 1, 6)
+        dash.setRowStretch(0, 0)
         dash.setRowStretch(1, 1)
 
         self._dashboard.hide()
@@ -521,11 +522,13 @@ class HomePage(QWidget):
         if on_import or on_data_tab:
             self._tabs.setMinimumHeight(0)
             self._tabs.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+            self._dash_layout.setRowStretch(0, 0)
             self._dash_layout.setRowStretch(1, 1)
         else:
             self._tabs.setMinimumHeight(0)
-            self._tabs.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
-            self._dash_layout.setRowStretch(1, 0)
+            self._tabs.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+            self._dash_layout.setRowStretch(0, 0)
+            self._dash_layout.setRowStretch(1, 1)
 
         self._update_header_control_visibility(index)
 
@@ -811,6 +814,8 @@ class HomePage(QWidget):
         footer = QLabel("")
         footer.setObjectName("tableFooter")
         footer.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        footer.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
+        footer.setMinimumHeight(footer.fontMetrics().height() + 4)
         layout.addWidget(footer)
         return container, footer
 

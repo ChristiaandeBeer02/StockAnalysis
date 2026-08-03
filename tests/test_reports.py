@@ -423,12 +423,14 @@ def test_margin_and_markup_alerts(db_session):
         select(PeriodTurnLine).where(PeriodTurnLine.item_id == fast.id)
     )
     line_fast.net_sales_revenue = 200.0
+    line_fast.gross_profit = 80.0
     fast.gross_margin_pct = 40.0
     fast.markup_pct = 66.6666666667
     line_mid = db_session.scalar(
         select(PeriodTurnLine).where(PeriodTurnLine.item_id == mid.id)
     )
     line_mid.net_sales_revenue = 100.0
+    line_mid.gross_profit = 25.0
     mid.gross_margin_pct = 25.0
     mid.markup_pct = 33.3333333333
     db_session.commit()
@@ -580,12 +582,13 @@ def test_top_sellers_ranked_by_gross_profit(db_session):
         select(PeriodTurnLine).where(PeriodTurnLine.item_id == fast.id)
     )
     line_fast.net_sales_revenue = 200.0
+    line_fast.gross_profit = 80.0
     fast.gross_margin_pct = 40.0
     line_mid = db_session.scalar(
         select(PeriodTurnLine).where(PeriodTurnLine.item_id == mid.id)
     )
     line_mid.net_sales_revenue = 800.0
-    mid.gross_margin_pct = 62.5
+    line_mid.gross_profit = 500.0
     db_session.commit()
 
     summary = build_period_summary(db_session)
