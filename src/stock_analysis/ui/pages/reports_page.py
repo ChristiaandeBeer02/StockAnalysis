@@ -16,6 +16,7 @@ from PySide6.QtWidgets import (
 from stock_analysis.analytics.inventory_queries import list_item_departments
 from stock_analysis.analytics.department_names import display_dept, load_nickname_map
 from stock_analysis.analytics.lookback import under_qty_label, over_qty_label, qty_column_label
+from stock_analysis.analytics.queries import get_holding_weeks
 from stock_analysis.analytics.pivot import ROW_FIELDS, build_pivot, value_fields_for_lookback
 from stock_analysis.analytics.reports import (
     abc_report,
@@ -331,13 +332,15 @@ class ReportsPage(QWidget):
                 "Cumulative %",
             ]
         )
+        with get_session() as session:
+            holding_weeks = get_holding_weeks(session)
         self._understock_table.set_headers(
             [
                 "SKU",
                 "Name",
                 "Dept",
                 "On Hand",
-                under_qty_label(self._lookback_weeks),
+                under_qty_label(holding_weeks),
                 "Est. Purchase Cost",
             ]
         )
@@ -347,7 +350,7 @@ class ReportsPage(QWidget):
                 "Name",
                 "Dept",
                 "On Hand",
-                over_qty_label(self._lookback_weeks),
+                over_qty_label(holding_weeks),
                 "Excess Value",
             ]
         )
@@ -558,19 +561,20 @@ class ReportsPage(QWidget):
         prompt_export_excel(self, title, self._pivot_headers, self._pivot_rows, "pivot.xlsx")
 
     def _export_understock(self, fmt: str) -> None:
+        with get_session() as session:
+            holding_weeks = get_holding_weeks(session)
+            title = (
+                f"Understocked Report — {report_period_label(session, self._lookback_weeks)}"
+                f"{self._export_title_suffix()}"
+            )
         headers = [
             "SKU",
             "Name",
             "Dept",
             "On Hand",
-            under_qty_label(self._lookback_weeks),
+            under_qty_label(holding_weeks),
             "Est. Purchase Cost",
         ]
-        with get_session() as session:
-            title = (
-                f"Understocked Report — {report_period_label(session, self._lookback_weeks)}"
-                f"{self._export_title_suffix()}"
-            )
         if fmt == "excel":
             prompt_export_excel(
                 self, title, headers, self._understock_rows, "understocked.xlsx"
@@ -581,19 +585,20 @@ class ReportsPage(QWidget):
             )
 
     def _export_overstock(self, fmt: str) -> None:
+        with get_session() as session:
+            holding_weeks = get_holding_weeks(session)
+            title = (
+                f"Overstocked Report — {report_period_label(session, self._lookback_weeks)}"
+                f"{self._export_title_suffix()}"
+            )
         headers = [
             "SKU",
             "Name",
             "Dept",
             "On Hand",
-            over_qty_label(self._lookback_weeks),
+            over_qty_label(holding_weeks),
             "Excess Value",
         ]
-        with get_session() as session:
-            title = (
-                f"Overstocked Report — {report_period_label(session, self._lookback_weeks)}"
-                f"{self._export_title_suffix()}"
-            )
         if fmt == "excel":
             prompt_export_excel(
                 self, title, headers, self._overstock_rows, "overstocked.xlsx"

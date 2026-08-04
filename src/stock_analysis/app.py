@@ -2,12 +2,22 @@
 
 import sys
 
-from PySide6.QtGui import QFont
+from PySide6.QtGui import QFont, QIcon, QPixmap
 from PySide6.QtWidgets import QApplication
 
 from stock_analysis.config import APP_NAME
+from stock_analysis.resources import icon_bytes
 from stock_analysis.db.session import init_db
 from stock_analysis.ui.main_window import MainWindow
+from stock_analysis.ui.stock_status_colors import KPI_ACCENT_COLORS
+
+
+def _stock_kpi_accent_rules() -> str:
+    return "\n".join(
+        f'#kpiCard[accent="{name}"] {{\n    border-left: 4px solid {color};\n}}'
+        for name, color in KPI_ACCENT_COLORS.items()
+    )
+
 
 STYLESHEET = """
 QMainWindow {
@@ -274,12 +284,20 @@ QStatusBar {
     background-color: #eef1f6;
     color: #4b5563;
 }
-"""
+""" + "\n" + _stock_kpi_accent_rules() + "\n"
+
+
+def _load_app_icon() -> QIcon:
+    pixmap = QPixmap()
+    if pixmap.loadFromData(icon_bytes()):
+        return QIcon(pixmap)
+    return QIcon()
 
 
 def create_app(argv: list[str] | None = None) -> QApplication:
     app = QApplication(argv or sys.argv)
     app.setApplicationName(APP_NAME)
+    app.setWindowIcon(_load_app_icon())
     app.setStyle("Fusion")
     font = QFont("Segoe UI", 10)
     app.setFont(font)

@@ -17,9 +17,20 @@ from PySide6.QtCharts import (
 )
 from PySide6.QtCore import QLocale, QMargins, Qt
 from PySide6.QtGui import QBrush, QColor, QPainter
-from PySide6.QtWidgets import QGraphicsView, QSizePolicy
+from PySide6.QtWidgets import QFrame, QGraphicsView, QHBoxLayout, QLabel, QSizePolicy, QVBoxLayout, QWidget
 
 from stock_analysis.analytics.department_names import display_dept
+from stock_analysis.ui.stock_status_colors import (
+    DEPT_CHART_OVERSTOCK_COLOR,
+    DEPT_CHART_SLOW_MOVING_COLOR,
+    DEPT_CHART_TOTAL_COLOR,
+    STOCK_HEALTH_COLORS,
+)
+
+# Slices below this share of total hide callout labels (still appear in legend).
+PIE_CALLOUT_MIN_PCT = 8.0
+# Slices at or above this show the percentage inside the ring.
+PIE_INSIDE_LABEL_MIN_PCT = 18.0
 
 PBI_COLORS = [
     "#118DFF",
@@ -31,16 +42,6 @@ PBI_COLORS = [
     "#D9B300",
     "#107C10",
 ]
-
-# Match kpiCard accent colors in app.py for Home Overview dept chart series.
-DEPT_CHART_TOTAL_COLOR = "#118DFF"
-DEPT_CHART_OVERSTOCK_COLOR = "#E66C37"
-DEPT_CHART_SLOW_MOVING_COLOR = "#D9B300"
-
-# Slices below this share of total hide callout labels (still appear in legend).
-PIE_CALLOUT_MIN_PCT = 8.0
-# Slices at or above this show the percentage inside the ring.
-PIE_INSIDE_LABEL_MIN_PCT = 18.0
 
 
 def _color(i: int) -> QColor:
@@ -91,6 +92,15 @@ def _chart_view(chart: QChart) -> QChartView:
     return view
 
 
+def _configure_value_axis(axis_y: QValueAxis, max_val: float, *, tick_count: int = 5) -> None:
+    nice_max = _nice_axis_max(max_val, tick_count=tick_count)
+    axis_y.setRange(0, nice_max)
+    axis_y.setLabelFormat("%.0f")
+    axis_y.setTickCount(tick_count)
+    axis_y.setMinorTickCount(0)
+    axis_y.setTruncateLabels(False)
+
+
 def build_dept_values_chart(
     dept_values: dict[str, float],
     nickname_map: dict[str, str] | None = None,
@@ -133,17 +143,13 @@ def build_dept_values_chart(
     chart = QChart()
     chart.addSeries(series)
     tick_count = 5
-    nice_max = _nice_axis_max(max_val, tick_count=tick_count)
     locale = QLocale(QLocale.Language.English, QLocale.Country.UnitedStates)
     chart.setLocale(locale)
     chart.setLocalizeNumbers(True)
     axis_x = QBarCategoryAxis()
     axis_x.append(labels)
     axis_y = QValueAxis()
-    axis_y.setRange(0, nice_max)
-    axis_y.setLabelFormat("%.0f")
-    axis_y.setTickCount(tick_count)
-    axis_y.setMinorTickCount(0)
+    _configure_value_axis(axis_y, max_val, tick_count=tick_count)
     chart.addAxis(axis_x, Qt.AlignmentFlag.AlignBottom)
     chart.addAxis(axis_y, Qt.AlignmentFlag.AlignLeft)
     series.attachAxis(axis_x)
@@ -163,6 +169,7 @@ def _configure_pie_slices(
     *,
     label_min_pct: float = PIE_CALLOUT_MIN_PCT,
     embedded: bool = False,
+    color_map: dict[str, str] | None = None,
 ) -> bool:
     """Add slices with smart labels. Returns True if legend should be shown."""
     items = sorted(((k, v) for k, v in data.items() if v > 0), key=lambda x: x[1], reverse=True)
@@ -174,9 +181,15 @@ def _configure_pie_slices(
     for i, (label, value) in enumerate(items):
         pct = 100.0 * value / total
         sl = series.append(label, value)
-        sl.setColor(_color(i))
+        if color_map and label in color_map:
+            sl.setColor(QColor(color_map[label]))
+        else:
+            sl.setColor(_color(i))
         pct_text = f"{pct:.1f}%"
-        legend_text = f"{label} ({pct_text})"
+        if embedded:
+            legend_text = label
+        else:
+            legend_text = f"{label} ({pct_text})"
         sl.setLabel(legend_text)
 
         if embedded:
@@ -191,6 +204,66 @@ def _configure_pie_slices(
             has_hidden_callouts = True
 
     return has_hidden_callouts or len(items) > 3
+
+
+def _stock_health_legend_items(data: dict[str, float]) -> list[tuple[str, float, str]]:
+    items = sorted(((k, v) for k, v in data.items() if v > 0), key=lambda x: x[1], reverse=True)
+    total = sum(v for _, v in items)
+    if total <= 0:
+        return []
+    return [
+        (
+            label,
+            100.0 * value / total,
+            STOCK_HEALTH_COLORS.get(label, PBI_COLORS[0]),
+        )
+        for label, value in items
+    ]
+
+
+def _build_stock_health_legend(data: dict[str, float]) -> QWidget:
+    legend = QWidget()
+    legend.setObjectName("stockHealthLegend")
+    row = QHBoxLayout(legend)
+    row.setContentsMargins(4, 2, 4, 0)
+    row.setSpacing(10)
+
+    for label, pct, color in _stock_health_legend_items(data):
+        item = QWidget()
+        item_layout = QVBoxLayout(item)
+        item_layout.setContentsMargins(0, 0, 0, 0)
+        item_layout.setSpacing(1)
+
+        header = QHBoxLayout()
+        header.setContentsMargins(0, 0, 0, 0)
+        header.setSpacing(4)
+        marker = QFrame()
+        marker.setFixedSize(12, 12)
+        marker.setStyleSheet(f"background-color: {color}; border: none;")
+        name = QLabel(label)
+        name.setWordWrap(True)
+        header.addWidget(marker, 0, Qt.AlignmentFlag.AlignTop)
+        header.addWidget(name, 1)
+        item_layout.addLayout(header)
+
+        pct_label = QLabel(f"{pct:.1f}%")
+        pct_label.setObjectName("stockHealthLegendPct")
+        pct_label.setContentsMargins(16, 0, 0, 0)
+        item_layout.addWidget(pct_label)
+
+        row.addWidget(item, stretch=1)
+
+    return legend
+
+
+def _wrap_chart_with_stock_health_legend(view: QChartView, data: dict[str, float]) -> QWidget:
+    container = QWidget()
+    layout = QVBoxLayout(container)
+    layout.setContentsMargins(0, 0, 0, 0)
+    layout.setSpacing(4)
+    layout.addWidget(view, stretch=1)
+    layout.addWidget(_build_stock_health_legend(data), stretch=0)
+    return container
 
 
 def build_pie_chart(
@@ -215,7 +288,9 @@ def build_pie_chart(
     return view
 
 
-def build_stock_health_chart(breakdown: dict[str, int], *, embedded: bool = False) -> QChartView:
+def build_stock_health_chart(
+    breakdown: dict[str, int], *, embedded: bool = False
+) -> QChartView | QWidget:
     data = {k: float(v) for k, v in breakdown.items() if v > 0}
     if not data:
         return _empty_chart("No data")
@@ -223,12 +298,20 @@ def build_stock_health_chart(breakdown: dict[str, int], *, embedded: bool = Fals
     series.setHoleSize(0.55)
     series.setPieSize(0.78)
     _configure_pie_slices(
-        series, data, label_min_pct=PIE_CALLOUT_MIN_PCT, embedded=embedded
+        series,
+        data,
+        label_min_pct=PIE_CALLOUT_MIN_PCT,
+        embedded=embedded,
+        color_map=STOCK_HEALTH_COLORS,
     )
     chart = QChart()
     chart.addSeries(series)
-    chart.setMargins(QMargins(8, 4, 8, 36))
+    bottom_margin = 8 if embedded else 48
+    chart.setMargins(QMargins(8, 4, 8, bottom_margin))
     view = _chart_view(chart)
+    if embedded:
+        chart.legend().setVisible(False)
+        return _wrap_chart_with_stock_health_legend(view, data)
     chart.legend().setVisible(True)
     chart.legend().setAlignment(Qt.AlignmentFlag.AlignBottom)
     return view
@@ -253,10 +336,7 @@ def build_item_sales_chart(chart_data: dict) -> tuple[QChartView, list[str]]:
     axis_x = QBarCategoryAxis()
     axis_x.append(labels)
     axis_y = QValueAxis()
-    axis_y.setRange(0, nice_max)
-    axis_y.setLabelFormat("%.0f")
-    axis_y.setTickCount(tick_count)
-    axis_y.setMinorTickCount(0)
+    _configure_value_axis(axis_y, max_val, tick_count=tick_count)
     chart.addAxis(axis_x, Qt.AlignmentFlag.AlignBottom)
     chart.addAxis(axis_y, Qt.AlignmentFlag.AlignLeft)
     series.attachAxis(axis_x)

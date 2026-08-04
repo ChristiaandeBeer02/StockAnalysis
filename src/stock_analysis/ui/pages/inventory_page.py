@@ -38,6 +38,7 @@ from stock_analysis.analytics.department_names import (
     update_item_department,
 )
 from stock_analysis.analytics.inventory_queries import list_inventory_departments
+from stock_analysis.analytics.queries import get_holding_weeks
 from stock_analysis.analytics.lookback import (
     lookback_label,
     over_qty_label,
@@ -150,8 +151,9 @@ class ItemDetailPage(QWidget):
         self._kpi_over = KpiCard("Over Qty")
         self._kpi_under = KpiCard("Under Qty")
         self._kpi_abc = KpiCard("ABC Class")
-        self._kpi_over.set_accent("warning")
-        self._kpi_under.set_accent("danger")
+        self._kpi_value.set_accent("stock-value")
+        self._kpi_over.set_accent("stock-over")
+        self._kpi_under.set_accent("stock-under")
         self._kpis = [
             self._on_hand_card,
             self._kpi_value,
@@ -332,9 +334,11 @@ class ItemDetailPage(QWidget):
 
     def _update_lookback_kpi_titles(self) -> None:
         weeks = self._lookback_weeks
+        with get_session() as session:
+            holding_weeks = get_holding_weeks(session)
         self._kpi_sales.set_title(sales_period_label(weeks))
-        self._kpi_over.set_title(over_qty_label(weeks))
-        self._kpi_under.set_title(under_qty_label(weeks))
+        self._kpi_over.set_title(over_qty_label(holding_weeks))
+        self._kpi_under.set_title(under_qty_label(holding_weeks))
 
     def _on_detail_lookback_changed(self) -> None:
         self._lookback_weeks = self._detail_lookback.value()
@@ -556,10 +560,11 @@ class InventoryPage(QWidget):
         self._inv_kpi_over = KpiCard("Overstocked", filter_key="overstock")
         self._inv_kpi_slow = KpiCard("Slow Moving", filter_key="slow")
         self._inv_kpi_dead = KpiCard("Dead Stock", filter_key="dead")
-        self._inv_kpi_under.set_accent("danger")
-        self._inv_kpi_over.set_accent("warning")
-        self._inv_kpi_slow.set_accent("amber")
-        self._inv_kpi_dead.set_accent("danger")
+        self._inv_kpi_value.set_accent("stock-value")
+        self._inv_kpi_under.set_accent("stock-under")
+        self._inv_kpi_over.set_accent("stock-over")
+        self._inv_kpi_slow.set_accent("stock-slow")
+        self._inv_kpi_dead.set_accent("stock-dead")
         inv_kpis = [
             self._inv_kpi_count,
             self._inv_kpi_value,

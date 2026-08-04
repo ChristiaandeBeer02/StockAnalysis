@@ -3,7 +3,7 @@
 from pathlib import Path
 
 APP_NAME = "Stock Analysis"
-APP_VERSION = "0.5.0"
+APP_VERSION = "1.0.0"
 
 DEPRECATED_PATTERN = r"z{4,}"
 

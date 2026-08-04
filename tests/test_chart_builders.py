@@ -1,11 +1,17 @@
 """Tests for chart builder helpers."""
 
 import pytest
-from PySide6.QtCharts import QBarSeries, QValueAxis
+from PySide6.QtCharts import QBarSeries, QChartView, QPieSeries, QValueAxis
 from PySide6.QtCore import QMargins
 from PySide6.QtGui import QColor
-from PySide6.QtWidgets import QApplication
+from PySide6.QtWidgets import QApplication, QLabel, QWidget
 
+from stock_analysis.ui.stock_status_colors import (
+    DEAD_STOCK,
+    OVERSTOCKED,
+    SLOW_MOVING,
+    UNDERSTOCKED,
+)
 from stock_analysis.ui.widgets.chart_builders import (
     DEPT_CHART_OVERSTOCK_COLOR,
     DEPT_CHART_SLOW_MOVING_COLOR,
@@ -13,6 +19,7 @@ from stock_analysis.ui.widgets.chart_builders import (
     _nice_axis_max,
     build_dept_values_chart,
     build_item_sales_chart,
+    build_stock_health_chart,
 )
 
 @pytest.fixture(scope="session")
@@ -110,6 +117,26 @@ def test_dept_values_chart_multi_series_uses_kpi_colors_and_axis_max(qapp):
     assert float(axis_y.max()) == _nice_axis_max(100.0)
 
 
+def test_dept_values_chart_y_axis_labels_not_truncated(qapp):
+    from stock_analysis.app import STYLESHEET
+
+    qapp.setStyleSheet(STYLESHEET)
+    dept = {"B002": 5_000, "test": 3_000, "T001": 2_000}
+    over = {"B002": 50, "test": 30, "T001": 20}
+    slow = {"B002": 250, "test": 150, "T001": 100}
+    view, _ = build_dept_values_chart(
+        dept,
+        overstock_values=over,
+        slow_moving_values=slow,
+    )
+    view.resize(492, 240)
+    view.show()
+    qapp.processEvents()
+
+    axis_y = next(axis for axis in view.chart().axes() if isinstance(axis, QValueAxis))
+    assert not axis_y.labelsTruncated()
+
+
 def test_item_sales_chart_y_axis_covers_all_period_totals(qapp):
     chart_data = {
         "labels": ["21/07/2026\n27/07/2026"],
@@ -127,3 +154,38 @@ def test_item_sales_chart_y_axis_covers_all_period_totals(qapp):
     axis_y = next(axis for axis in chart.axes() if isinstance(axis, QValueAxis))
     assert float(axis_y.max()) >= 794.0
     assert float(axis_y.max()) == _nice_axis_max(794.0)
+
+
+def test_stock_health_chart_embedded_uses_custom_legend(qapp):
+    breakdown = {
+        "Healthy": 50,
+        "Dead Stock": 10,
+        "No movement data": 5,
+    }
+    content = build_stock_health_chart(breakdown, embedded=True)
+    chart_view = content.findChild(QChartView)
+    assert chart_view is not None
+    assert not chart_view.chart().legend().isVisible()
+
+    legend = content.findChild(QWidget, "stockHealthLegend")
+    assert legend is not None
+    pct_labels = legend.findChildren(QLabel, "stockHealthLegendPct")
+    assert len(pct_labels) == 3
+    assert {label.text() for label in pct_labels} == {"76.9%", "15.4%", "7.7%"}
+
+
+def test_stock_health_chart_uses_status_colors(qapp):
+    breakdown = {
+        "Dead Stock": 10,
+        "Understocked": 20,
+        "Overstocked": 30,
+        "Slow Moving": 40,
+    }
+    view = build_stock_health_chart(breakdown)
+    series = next(s for s in view.chart().series() if isinstance(s, QPieSeries))
+    colors = {sl.label().split("\n", 1)[0].split(" (", 1)[0]: sl.color().name().upper() for sl in series.slices()}
+
+    assert colors["Dead Stock"] == QColor(DEAD_STOCK).name().upper()
+    assert colors["Understocked"] == QColor(UNDERSTOCKED).name().upper()
+    assert colors["Overstocked"] == QColor(OVERSTOCKED).name().upper()
+    assert colors["Slow Moving"] == QColor(SLOW_MOVING).name().upper()

@@ -7,8 +7,10 @@ from PyInstaller.utils.hooks import collect_all
 
 project_root = Path(SPECPATH)
 src = project_root / "src"
+resources = src / "stock_analysis" / "resources"
+icon_file = resources / "manta-ray.ico"
 
-datas = []
+datas = [(str(resources), "stock_analysis/resources")]
 binaries = []
 hiddenimports = [
     "sqlalchemy.dialects.sqlite",
@@ -47,6 +49,7 @@ exe = EXE(
     a.datas,
     [],
     name="StockAnalysis",
+    icon=str(icon_file),
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,

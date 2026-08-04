@@ -238,11 +238,12 @@ class HomePage(QWidget):
         self._kpi_slow = KpiCard("Slow Moving", filter_key="slow")
         self._kpi_sales = KpiCard("Sales Value", filter_key="sales")
         self._kpi_dead = KpiCard("Dead Stock", filter_key="dead")
-        self._kpi_overstock.set_accent("warning")
-        self._kpi_understock.set_accent("danger")
-        self._kpi_slow.set_accent("amber")
+        self._kpi_value.set_accent("stock-value")
+        self._kpi_overstock.set_accent("stock-over")
+        self._kpi_understock.set_accent("stock-under")
+        self._kpi_slow.set_accent("stock-slow")
         self._kpi_sales.set_accent("success")
-        self._kpi_dead.set_accent("danger")
+        self._kpi_dead.set_accent("stock-dead")
         for card in (
             self._kpi_overstock,
             self._kpi_understock,
@@ -494,6 +495,7 @@ class HomePage(QWidget):
         self._load_period_data()
 
     def _on_holding_changed(self) -> None:
+        self._update_lookback_labels()
         self._load_period_data()
 
     def _sync_lookback_combos(self) -> None:
@@ -513,8 +515,12 @@ class HomePage(QWidget):
         _SALES_MODE["title"] = units_sold_label(weeks)
         _SALES_MODE["headers"][3] = qty_column_label(weeks)
         _SALES_MODE["filename"] = f"sales_{label}"
-        _STOCK_ALERT_MODES["understock"]["headers"][3] = under_qty_label(weeks)
-        _STOCK_ALERT_MODES["overstock"]["headers"][3] = over_qty_label(weeks)
+        _STOCK_ALERT_MODES["understock"]["headers"][3] = under_qty_label(
+            self._holding_spin.value()
+        )
+        _STOCK_ALERT_MODES["overstock"]["headers"][3] = over_qty_label(
+            self._holding_spin.value()
+        )
 
     def _on_home_tab_changed(self, index: int) -> None:
         on_import = index == _IMPORT_TAB

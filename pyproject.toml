@@ -1,6 +1,6 @@
 [project]
 name = "stock-analysis"
-version = "0.5.0"
+version = "1.0.0"
 description = "Single-user Windows desktop inventory analytics"
 readme = "README.md"
 requires-python = ">=3.12"
@@ -29,6 +29,9 @@ build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+stock_analysis = ["resources/*"]
 
 [tool.ruff]
 line-length = 100
