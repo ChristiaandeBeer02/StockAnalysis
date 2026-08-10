@@ -71,11 +71,11 @@ def db_session(tmp_path):
     session.flush()
 
     items = [
-        ("FAST001", "Fast Seller", "A1", 10.0, 5.0, 100.0),
-        ("SLOW001", "Slow Mover", "B2", 20.0, 2.0, 0.0),
-        ("MID001", "Mid Seller", "A1", 5.0, 4.0, 20.0),
+        ("FAST001", "Fast Seller", "A1", 10.0, 5.0, 100.0, 500.0),
+        ("SLOW001", "Slow Mover", "B2", 20.0, 2.0, 0.0, 0.0),
+        ("MID001", "Mid Seller", "A1", 5.0, 4.0, 20.0, 80.0),
     ]
-    for sku, name, dept, on_hand, cost, sold_90 in items:
+    for sku, name, dept, on_hand, cost, sold_90, net_revenue in items:
         item = Item(sku=sku, name=name, department=dept, unit_cost=cost)
         session.add(item)
         session.flush()
@@ -95,6 +95,7 @@ def db_session(tmp_path):
                 on_hand=on_hand,
                 qty_sold_90=sold_90,
                 last_unit_cost=cost,
+                net_sales_revenue=net_revenue,
                 over_stock_qty_3mo=0.0,
                 under_stock_qty_3mo=0.0,
             )
@@ -347,6 +348,36 @@ def test_build_period_summary(db_session):
     assert summary["slow_moving_items"] == []
     assert summary["overstock_value"] == pytest.approx(0.0)
     assert summary["understock_value"] == pytest.approx(1322.0)
+
+
+def test_build_period_summary_sales_value_uses_nett_sales(db_session):
+    fast = db_session.scalar(select(Item).where(Item.sku == "FAST001"))
+    turn = db_session.scalar(
+        select(PeriodTurnLine).where(PeriodTurnLine.item_id == fast.id)
+    )
+    turn.net_sales_revenue = 250.0
+    turn.qty_sold_90 = 10.0
+    fast.unit_price = 99.0
+    db_session.commit()
+
+    summary = build_period_summary(db_session)
+    fast_row = next(row for row in summary["sales_items"] if row["code"] == "FAST001")
+    assert fast_row["sales_value"] == pytest.approx(250.0)
+
+
+def test_build_period_summary_sales_value_falls_back_to_unit_price(db_session):
+    fast = db_session.scalar(select(Item).where(Item.sku == "FAST001"))
+    turn = db_session.scalar(
+        select(PeriodTurnLine).where(PeriodTurnLine.item_id == fast.id)
+    )
+    turn.net_sales_revenue = 0.0
+    turn.qty_sold_90 = 10.0
+    fast.unit_price = 15.0
+    db_session.commit()
+
+    summary = build_period_summary(db_session)
+    fast_row = next(row for row in summary["sales_items"] if row["code"] == "FAST001")
+    assert fast_row["sales_value"] == pytest.approx(150.0)
 
 
 def test_build_inventory_list_summary_value_fields(db_session):
@@ -691,6 +722,7 @@ def test_inventory_summary_uses_lookback_period_lines(db_session):
             on_hand=10.0,
             qty_sold_90=1.0,
             last_unit_cost=5.0,
+            net_sales_revenue=5.0,
             avg_monthly_sales_3mo=50.0,
         )
     )
@@ -702,6 +734,7 @@ def test_inventory_summary_uses_lookback_period_lines(db_session):
             on_hand=10.0,
             qty_sold_90=100.0,
             last_unit_cost=5.0,
+            net_sales_revenue=500.0,
             avg_monthly_sales_3mo=50.0,
         )
     )

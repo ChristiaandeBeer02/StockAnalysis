@@ -12,7 +12,7 @@ from stock_analysis.analytics.metrics import (
     effective_on_hand,
     effective_unit_cost,
     item_stock_health,
-    sales_value,
+    resolve_sales_value,
     stock_position_from_holding_policy,
     stock_value,
 )
@@ -293,7 +293,10 @@ def build_period_summary(
         cost = effective_unit_cost(line, item)
         dept = _item_dept(line, item)
         total_sales += sold
-        total_sales_value += sales_value(sold, cost)
+        revenue, _profit = item_sales_totals(sales_totals, item.id)
+        total_sales_value += resolve_sales_value(
+            revenue, sold, unit_price=item.unit_price
+        )
         if category == "understocked":
             understock_items += 1
             understock_value += abs(under_qty) * cost
@@ -476,7 +479,11 @@ def build_period_summary(
             "name": item.name[:40],
             "dept": (line.dept if line else None) or item.department or "Unknown",
             "qty_sold": qty,
-            "sales_value": sales_value(qty, effective_unit_cost(line, item)),
+            "sales_value": resolve_sales_value(
+                item_sales_totals(sales_totals, item.id)[0],
+                qty,
+                unit_price=item.unit_price,
+            ),
             "gross_profit": item_sales_totals(sales_totals, item.id)[1],
         }
         for line, item, qty in _build_ranked_sales_rows(

@@ -10,12 +10,15 @@ from stock_analysis.analytics.dashboard import get_lookback_period_lines
 from stock_analysis.analytics.lookback import (
     DEFAULT_LOOKBACK_WEEKS,
     build_multi_batch_qty_map,
+    build_multi_batch_sales_totals,
     item_qty_sold,
+    item_sales_totals,
 )
 from stock_analysis.analytics.metrics import (
     effective_on_hand,
     effective_unit_cost,
     item_stock_health,
+    resolve_sales_value,
     stock_position_from_holding_policy,
     stock_value,
 )
@@ -242,13 +245,15 @@ def abc_report(
 
     baseline_map = baseline_qty_map(session, [item.id for _, item in lines])
     qty_map = build_multi_batch_qty_map(session, lookback_weeks)
+    sales_totals = build_multi_batch_sales_totals(session, lookback_weeks)
     rows: list[dict] = []
     for line, item in lines:
         if dept_filter and _line_department(line, item) != dept_filter:
             continue
         cost = effective_unit_cost(line, item)
         sold = item_qty_sold(qty_map, item.id)
-        sales_val = sold * cost
+        revenue, _profit = item_sales_totals(sales_totals, item.id)
+        sales_val = resolve_sales_value(revenue, sold, unit_price=item.unit_price)
         qty = effective_on_hand(baseline_map, item.id, line.on_hand)
         rows.append(
             {

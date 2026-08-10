@@ -147,6 +147,25 @@ def test_gross_profit_from_margin():
     assert gross_profit_from_margin(200.0, None) == pytest.approx(0.0)
 
 
+def test_resolve_sales_value_uses_revenue():
+    from stock_analysis.analytics.metrics import resolve_sales_value
+
+    assert resolve_sales_value(100.0, 10.0, unit_price=15.0) == pytest.approx(100.0)
+
+
+def test_resolve_sales_value_falls_back_to_unit_price():
+    from stock_analysis.analytics.metrics import resolve_sales_value
+
+    assert resolve_sales_value(0.0, 10.0, unit_price=15.0) == pytest.approx(150.0)
+
+
+def test_resolve_sales_value_zero_without_revenue_or_price():
+    from stock_analysis.analytics.metrics import resolve_sales_value
+
+    assert resolve_sales_value(0.0, 10.0, unit_price=None) == pytest.approx(0.0)
+    assert resolve_sales_value(0.0, 10.0) == pytest.approx(0.0)
+
+
 def test_gross_margin_pct_on_revenue():
     assert gross_margin_pct(40.0, 100.0) == pytest.approx(40.0)
 

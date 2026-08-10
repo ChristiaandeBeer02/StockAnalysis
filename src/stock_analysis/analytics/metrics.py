@@ -40,6 +40,20 @@ def sales_value(qty_sold_90: float, unit_cost: float) -> float:
     return qty_sold_90 * unit_cost
 
 
+def resolve_sales_value(
+    revenue: float,
+    qty: float,
+    *,
+    unit_price: float | None = None,
+) -> float:
+    """Resolve sales value: NettSales revenue, else catalog unit_price × qty, else 0."""
+    if revenue > 0:
+        return revenue
+    if unit_price is not None and unit_price > 0:
+        return qty * unit_price
+    return 0.0
+
+
 def gross_margin_pct(profit: float, revenue: float) -> float:
     return (profit / revenue * 100.0) if revenue else 0.0
 
