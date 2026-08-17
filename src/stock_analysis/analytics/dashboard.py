@@ -668,14 +668,17 @@ def build_period_comparison(
 ) -> dict:
     from stock_analysis.analytics.cache import get_period_summary_cached
 
-    if len(_stock_batches_for_position(session)) < 2:
+    weeks = max(1, lookback_weeks)
+    if weeks < 2 or len(list_sales_batches(session)) < weeks:
         return {}
-    current = get_period_summary_cached(
-        session, lookback_weeks, stock_batch_offset=0, sales_batch_offset=0
+    older = get_period_summary_cached(
+        session, 1, stock_batch_offset=weeks - 1, sales_batch_offset=weeks - 1
     )
-    previous = get_period_summary_cached(
-        session, lookback_weeks, stock_batch_offset=1, sales_batch_offset=1
+    newer = get_period_summary_cached(
+        session, 1, stock_batch_offset=weeks - 2, sales_batch_offset=weeks - 2
     )
+    if not older or not newer:
+        return {}
     result = {}
     for key in (
         "overstock_value",
@@ -684,8 +687,8 @@ def build_period_comparison(
         "dead_stock_value",
         "total_sales_value",
     ):
-        cur = current.get(key, 0)
-        prev = previous.get(key, 0)
+        cur = newer.get(key, 0)
+        prev = older.get(key, 0)
         if prev:
             result[f"{key}_delta_pct"] = ((cur - prev) / prev) * 100
         else:
@@ -707,12 +710,15 @@ def filter_stock_rows(
     return result
 
 
-def _format_delta(pct: float | None) -> tuple[str, str]:
+def _format_delta(
+    pct: float | None, lookback_weeks: int | None = None
+) -> tuple[str, str]:
     if pct is None:
         return "—", "neutral"
     arrow = "▲" if pct > 0 else "▼" if pct < 0 else "—"
     direction = "up" if pct > 0 else "down" if pct < 0 else "neutral"
-    return f"{arrow} {abs(pct):.1f}% vs prior", direction
+    vs = f"vs {lookback_weeks}w ago" if lookback_weeks else "vs prior"
+    return f"{arrow} {abs(pct):.1f}% {vs}", direction
 
 
 def _item_abc_class(

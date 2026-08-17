@@ -37,6 +37,20 @@ def _get_engine():
     return _engine
 
 
+def dispose_engine() -> None:
+    """Close the process-wide engine so the SQLite file can be replaced."""
+    global _engine, _SessionLocal
+    if _engine is not None:
+        try:
+            with _engine.connect() as conn:
+                conn.exec_driver_sql("PRAGMA wal_checkpoint(TRUNCATE)")
+        except Exception:
+            pass
+        _engine.dispose()
+        _engine = None
+        _SessionLocal = None
+
+
 def _table_columns(conn, table_name: str) -> set[str]:
     from sqlalchemy import text
 

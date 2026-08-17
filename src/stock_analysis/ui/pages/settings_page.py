@@ -1,9 +1,12 @@
 """Application settings page."""
 
-from PySide6.QtCore import QSize
+from pathlib import Path
+
+from PySide6.QtCore import QDateTime, QSize
 from PySide6.QtWidgets import (
     QCheckBox,
     QDoubleSpinBox,
+    QFileDialog,
     QFormLayout,
     QGroupBox,
     QHBoxLayout,
@@ -24,6 +27,14 @@ from stock_analysis.analytics.dashboard_config import get_dashboard_config, save
 from stock_analysis.analytics.department_names import flush_item_departments
 from stock_analysis.config import APP_NAME, APP_VERSION, get_app_data_dir, get_database_path
 from stock_analysis.analytics.movement_periods import format_baseline_as_of_label, weekday_name
+from stock_analysis.db.backup import (
+    DatabaseBackupError,
+    export_database,
+    import_database,
+    previous_database_exists,
+    restore_previous_database,
+    validate_database,
+)
 from stock_analysis.db.session import (
     get_baseline_anchor_date,
     get_movement_closing_weekday,
@@ -167,10 +178,21 @@ class SettingsPage(QWidget):
         self._version = QLabel(APP_VERSION)
         self._data_dir = QLabel(str(get_app_data_dir()))
         self._db_path = QLabel(str(get_database_path()))
+        self._restore_db_btn = QPushButton("Restore previous database…")
+        self._restore_db_btn.clicked.connect(self._restore_database)
+        self._restore_db_btn.setEnabled(previous_database_exists())
+        db_row = QHBoxLayout()
+        db_row.addWidget(self._db_path, stretch=1)
+        db_row.addWidget(self._restore_db_btn)
         app_info_form.addRow("Application:", self._app_name)
         app_info_form.addRow("Version:", self._version)
         app_info_form.addRow("Data folder:", self._data_dir)
-        app_info_form.addRow("Database:", self._db_path)
+        app_info_form.addRow("Database:", db_row)
+
+        self._export_db_btn = QPushButton("Export database…")
+        self._export_db_btn.clicked.connect(self._export_database)
+        self._import_db_btn = QPushButton("Import database…")
+        self._import_db_btn.clicked.connect(self._import_database)
 
         layout.setSpacing(12)
         layout.addWidget(_EqualWidthRow(movement_group, holding_group))
@@ -187,6 +209,11 @@ class SettingsPage(QWidget):
         )
         layout.addWidget(dashboard_group)
         layout.addWidget(app_info_group)
+        layout.addWidget(
+            _EqualWidthRow(
+                _button_cell(self._export_db_btn), _button_cell(self._import_db_btn)
+            )
+        )
         layout.addStretch()
 
         self._stack.addWidget(self._main)
@@ -331,3 +358,112 @@ class SettingsPage(QWidget):
         self._show_slow_moving_tab.setChecked(config.get("show_slow_moving_tab", True))
         self._show_dead_stock_tab.setChecked(config.get("show_dead_stock_tab", True))
         self._show_stock_health.setChecked(config.get("show_stock_health", True))
+        self._restore_db_btn.setEnabled(previous_database_exists())
+
+    def _notify_data_changed(self) -> None:
+        if self._on_data_changed:
+            self._on_data_changed()
+        self.refresh()
+
+    def _export_database(self) -> None:
+        stamp = QDateTime.currentDateTime().toString("yyyyMMdd")
+        path, _ = QFileDialog.getSaveFileName(
+            self,
+            "Export database",
+            str(Path.home() / f"stock_data-{stamp}.db"),
+            "SQLite Database (*.db)",
+        )
+        if not path:
+            return
+        dest = Path(path)
+        if dest.suffix.lower() != ".db":
+            dest = dest.with_suffix(".db")
+        try:
+            export_database(dest)
+        except DatabaseBackupError as exc:
+            QMessageBox.critical(self, "Export failed", str(exc))
+            return
+        QMessageBox.information(self, "Database exported", f"Saved to:\n{dest}")
+
+    def _import_database(self) -> None:
+        path, _ = QFileDialog.getOpenFileName(
+            self,
+            "Import database",
+            str(Path.home()),
+            "SQLite Database (*.db);;All files (*.*)",
+        )
+        if not path:
+            return
+        reply = QMessageBox.warning(
+            self,
+            "Import database",
+            "Replace the current database with this file?\n\n"
+            "A copy of the current database will be kept so you can restore it.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+        src = Path(path)
+        result = validate_database(src)
+        if not result.ok:
+            QMessageBox.critical(
+                self,
+                "Import failed",
+                result.error or "Database failed validation.",
+            )
+            return
+        if result.newer_schema:
+            warn = QMessageBox.warning(
+                self,
+                "Newer database",
+                result.warning
+                or "This file may be from a newer app version. Import anyway?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No,
+            )
+            if warn != QMessageBox.StandardButton.Yes:
+                return
+        try:
+            import_database(src)
+        except DatabaseBackupError as exc:
+            QMessageBox.critical(self, "Import failed", str(exc))
+            return
+        self._notify_data_changed()
+        QMessageBox.information(self, "Database imported", "The selected database is now in use.")
+
+    def _restore_database(self) -> None:
+        if not previous_database_exists():
+            QMessageBox.information(
+                self,
+                "Nothing to restore",
+                "No previous database is available.",
+            )
+            return
+        reply = QMessageBox.warning(
+            self,
+            "Restore previous database",
+            "Swap the current database with the previous copy?\n\n"
+            "The database you are using now will become the previous copy.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+        try:
+            result = restore_previous_database()
+        except DatabaseBackupError as exc:
+            QMessageBox.critical(self, "Restore failed", str(exc))
+            return
+        if result.newer_schema:
+            QMessageBox.warning(
+                self,
+                "Restored newer database",
+                result.warning or "The previous database may be from a newer app version.",
+            )
+        self._notify_data_changed()
+        QMessageBox.information(
+            self,
+            "Database restored",
+            "The previous database is now in use.",
+        )

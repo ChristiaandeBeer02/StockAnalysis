@@ -746,7 +746,10 @@ class HomePage(QWidget):
                 ("dead_stock_value", self._kpi_dead),
                 ("total_sales_value", self._kpi_sales),
             ):
-                text, direction = _format_delta(self._comparison.get(f"{key}_delta_pct"))
+                text, direction = _format_delta(
+                    self._comparison.get(f"{key}_delta_pct"),
+                    self._lookback_weeks,
+                )
                 card.set_delta(text, direction)
 
         if self._show_overview_charts:
@@ -1092,6 +1095,7 @@ class HomePage(QWidget):
             )
 
     def _load_period_data(self) -> None:
+        self._sync_lookback_combos()
         with get_session() as session:
             config = get_dashboard_config(session)
             summaries = load_summaries(session)
@@ -1108,8 +1112,6 @@ class HomePage(QWidget):
             )
             comparison = build_period_comparison(session, self._lookback_weeks)
             self._nickname_map = load_nickname_map(session)
-
-        self._sync_lookback_combos()
 
         self._period = period or {}
 

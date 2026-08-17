@@ -485,8 +485,17 @@ def test_margin_and_markup_alerts(db_session):
     assert fast_markup["markup_pct"] == pytest.approx(66.6666666667)
 
 
-def test_period_comparison_delta_none_when_prior_zero(db_session):
+def test_period_comparison_empty_when_lookback_one(db_session):
+    from stock_analysis.analytics.cache import invalidate_summaries
+
+    invalidate_summaries()
+    assert build_period_comparison(db_session, lookback_weeks=1) == {}
+
+
+def test_period_comparison_delta_none_when_older_week_zero(db_session):
     from datetime import UTC, datetime, timedelta
+
+    from stock_analysis.analytics.cache import invalidate_summaries
 
     now = datetime.now(UTC)
     enrichment = db_session.scalar(
@@ -548,9 +557,74 @@ def test_period_comparison_delta_none_when_prior_zero(db_session):
         )
     )
     db_session.commit()
+    invalidate_summaries()
 
-    comparison = build_period_comparison(db_session)
+    comparison = build_period_comparison(db_session, lookback_weeks=2)
     assert comparison["slow_moving_value_delta_pct"] is None
+    assert comparison["dead_stock_value_delta_pct"] is None
+
+
+def test_period_comparison_dead_stock_week_n_vs_n_minus_one(db_session):
+    from datetime import UTC, datetime, timedelta
+
+    from stock_analysis.analytics.cache import invalidate_summaries
+    from stock_analysis.analytics.dashboard import _format_delta
+
+    now = datetime.now(UTC)
+    enrichment = db_session.scalar(
+        select(ImportBatch).where(ImportBatch.import_type == "baseline_enrichment")
+    )
+    enrichment.imported_at = now - timedelta(days=20)
+    batch_older = ImportBatch(
+        import_type="period_turn",
+        file_name="older.csv",
+        period_start="01/02/2026",
+        period_end="07/02/2026",
+        status="applied",
+        imported_at=now - timedelta(days=7),
+    )
+    batch_newer = ImportBatch(
+        import_type="period_turn",
+        file_name="newer.csv",
+        period_start="08/02/2026",
+        period_end="14/02/2026",
+        status="applied",
+        imported_at=now,
+    )
+    db_session.add_all([batch_older, batch_newer])
+    db_session.flush()
+
+    slow_item = db_session.scalar(select(Item).where(Item.sku == "SLOW001"))
+    db_session.add(
+        PeriodTurnLine(
+            import_batch_id=batch_older.id,
+            item_id=slow_item.id,
+            dept="B2",
+            on_hand=20.0,
+            qty_sold_90=0.0,
+            last_unit_cost=50.0,
+            avg_monthly_sales_3mo=0.0,
+        )
+    )
+    db_session.add(
+        PeriodTurnLine(
+            import_batch_id=batch_newer.id,
+            item_id=slow_item.id,
+            dept="B2",
+            on_hand=20.0,
+            qty_sold_90=0.0,
+            last_unit_cost=75.0,
+            avg_monthly_sales_3mo=0.0,
+        )
+    )
+    db_session.commit()
+    invalidate_summaries()
+
+    comparison = build_period_comparison(db_session, lookback_weeks=2)
+    assert comparison["dead_stock_value_delta_pct"] == pytest.approx(50.0)
+    text, direction = _format_delta(comparison["dead_stock_value_delta_pct"], 2)
+    assert text == "▲ 50.0% vs 2w ago"
+    assert direction == "up"
 
 
 def test_top_sellers_respects_lookback_weeks(db_session):
