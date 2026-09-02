@@ -25,10 +25,14 @@ from PySide6.QtWidgets import (
 
 from stock_analysis.analytics.cache import get_period_summary_cached, load_summaries
 from stock_analysis.analytics.dashboard import (
-    _format_delta,
     build_inventory_list_summary,
-    build_period_comparison,
     filter_stock_rows,
+)
+from stock_analysis.analytics.kpi_previous import (
+    apply_previous_amount,
+    format_rand,
+    previous_lookback_weeks,
+    previous_window_tag,
 )
 from stock_analysis.analytics.metrics import pct_in_range
 from stock_analysis.analytics.lookback import (
@@ -162,7 +166,7 @@ class HomePage(QWidget):
         self._slow_display_rows: list[list] = []
         self._dead_display_rows: list[list] = []
         self._lookback_weeks = 1
-        self._comparison: dict = {}
+        self._prev_sales_rows: list[dict] = []
         self._show_overview_kpis = True
         self._show_overview_charts = True
         self._show_overview_health = True
@@ -720,37 +724,86 @@ class HomePage(QWidget):
                 dept=self._dept,
                 lookback_weeks=self._lookback_weeks,
             )
+            prev_weeks = previous_lookback_weeks(self._lookback_weeks)
+            tag = previous_window_tag(self._lookback_weeks)
+            prev_inventory = None
+            if self._show_overview_kpis and prev_weeks and tag:
+                prev_inventory = build_inventory_list_summary(
+                    session,
+                    search="",
+                    status="Active",
+                    has_enrichment=enriched,
+                    dept=self._dept,
+                    lookback_weeks=prev_weeks,
+                )
 
         if self._show_overview_kpis:
-            self._kpi_value.set_value(f"R {inventory_summary['total_value']:,.2f}")
-            self._kpi_overstock.set_value(
-                f"R {inventory_summary.get('overstock_value', 0):,.2f}"
-            )
-            self._kpi_understock.set_value(
-                f"R {inventory_summary.get('understock_value', 0):,.2f}"
-            )
-            self._kpi_slow.set_value(
-                f"R {inventory_summary.get('slow_moving_value', 0):,.2f}"
-            )
-            self._kpi_dead.set_value(
-                f"R {inventory_summary.get('dead_stock_value', 0):,.2f}"
-            )
+
+            total_value = inventory_summary["total_value"]
+            overstock_value = inventory_summary.get("overstock_value", 0)
+            understock_value = inventory_summary.get("understock_value", 0)
+            slow_value = inventory_summary.get("slow_moving_value", 0)
+            dead_value = inventory_summary.get("dead_stock_value", 0)
             filtered_sales = filter_stock_rows(self._sales_rows, dept=self._dept)
             total_sales_value = sum(r["sales_value"] for r in filtered_sales)
+            prev_sales_value = (
+                sum(
+                    r["sales_value"]
+                    for r in filter_stock_rows(self._prev_sales_rows, dept=self._dept)
+                )
+                if tag
+                else None
+            )
+
+            self._kpi_value.set_value(f"R {total_value:,.2f}")
+            self._kpi_overstock.set_value(f"R {overstock_value:,.2f}")
+            self._kpi_understock.set_value(f"R {understock_value:,.2f}")
+            self._kpi_slow.set_value(f"R {slow_value:,.2f}")
+            self._kpi_dead.set_value(f"R {dead_value:,.2f}")
             self._kpi_sales.set_value(f"R {total_sales_value:,.2f}")
 
-            for key, card in (
-                ("overstock_value", self._kpi_overstock),
-                ("understock_value", self._kpi_understock),
-                ("slow_moving_value", self._kpi_slow),
-                ("dead_stock_value", self._kpi_dead),
-                ("total_sales_value", self._kpi_sales),
-            ):
-                text, direction = _format_delta(
-                    self._comparison.get(f"{key}_delta_pct"),
-                    self._lookback_weeks,
-                )
-                card.set_delta(text, direction)
+            apply_previous_amount(
+                self._kpi_value,
+                total_value,
+                None if prev_inventory is None else prev_inventory["total_value"],
+                formatter=format_rand,
+                tag=tag,
+            )
+            apply_previous_amount(
+                self._kpi_overstock,
+                overstock_value,
+                None if prev_inventory is None else prev_inventory.get("overstock_value", 0),
+                formatter=format_rand,
+                tag=tag,
+            )
+            apply_previous_amount(
+                self._kpi_understock,
+                understock_value,
+                None if prev_inventory is None else prev_inventory.get("understock_value", 0),
+                formatter=format_rand,
+                tag=tag,
+            )
+            apply_previous_amount(
+                self._kpi_slow,
+                slow_value,
+                None if prev_inventory is None else prev_inventory.get("slow_moving_value", 0),
+                formatter=format_rand,
+                tag=tag,
+            )
+            apply_previous_amount(
+                self._kpi_dead,
+                dead_value,
+                None if prev_inventory is None else prev_inventory.get("dead_stock_value", 0),
+                formatter=format_rand,
+                tag=tag,
+            )
+            apply_previous_amount(
+                self._kpi_sales,
+                total_sales_value,
+                prev_sales_value,
+                formatter=format_rand,
+                tag=tag,
+            )
 
         if self._show_overview_charts:
             dept_values = self._filter_dept_dict(
@@ -1103,6 +1156,10 @@ class HomePage(QWidget):
             enriched = has_enrichment(session)
             self._lookback_weeks = self._lookback_spin.value()
             period = get_period_summary_cached(session, self._lookback_weeks)
+            prev_weeks = previous_lookback_weeks(self._lookback_weeks)
+            prev_period = (
+                get_period_summary_cached(session, prev_weeks) if prev_weeks else {}
+            )
             inventory_summary = build_inventory_list_summary(
                 session,
                 search="",
@@ -1110,10 +1167,10 @@ class HomePage(QWidget):
                 has_enrichment=enriched,
                 lookback_weeks=self._lookback_weeks,
             )
-            comparison = build_period_comparison(session, self._lookback_weeks)
             self._nickname_map = load_nickname_map(session)
 
         self._period = period or {}
+        self._prev_sales_rows = (prev_period or {}).get("sales_items", []) if period else []
 
         show_kpis = config.get("show_kpis", True)
         show_charts = config.get("show_charts", True)
@@ -1125,7 +1182,6 @@ class HomePage(QWidget):
         self._show_overview_kpis = show_kpis
         self._show_overview_charts = show_charts
         self._show_overview_health = show_charts and show_health
-        self._comparison = comparison if period else {}
 
         for kpi in self._kpis:
             kpi.setVisible(show_kpis)
@@ -1168,8 +1224,10 @@ class HomePage(QWidget):
                 self._kpi_dead,
             ):
                 card.set_value("—")
-                card.set_delta("—")
+                card.set_delta("")
             self._kpi_value.set_value(f"R {summary['total_value']:,.2f}")
+            self._kpi_value.set_delta("")
+            self._prev_sales_rows = []
             self._departments = []
             self._understock_rows = []
             self._overstock_rows = []
@@ -1210,6 +1268,7 @@ class HomePage(QWidget):
             with get_session() as session:
                 summary = load_summaries(session).baseline
             self._kpi_value.set_value(f"R {summary['total_value']:,.2f}")
+            self._kpi_value.set_delta("")
             for card in (
                 self._kpi_overstock,
                 self._kpi_understock,
@@ -1218,6 +1277,7 @@ class HomePage(QWidget):
                 self._kpi_dead,
             ):
                 card.set_value("—")
+                card.set_delta("")
             self._dept_chart.setVisible(False)
             self._sellers_tile.setVisible(False)
             self._health_chart.setVisible(False)

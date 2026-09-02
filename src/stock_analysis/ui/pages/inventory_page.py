@@ -38,7 +38,16 @@ from stock_analysis.analytics.department_names import (
     update_item_department,
 )
 from stock_analysis.analytics.inventory_queries import list_inventory_departments
-from stock_analysis.analytics.queries import get_holding_weeks
+from stock_analysis.analytics.kpi_previous import (
+    apply_previous_amount,
+    apply_previous_text,
+    format_int_count,
+    format_qty,
+    format_qty_2dp,
+    format_rand,
+    previous_lookback_weeks,
+    previous_window_tag,
+)
 from stock_analysis.analytics.lookback import (
     lookback_label,
     over_qty_label,
@@ -392,6 +401,18 @@ class ItemDetailPage(QWidget):
         ]
         prompt_export_excel(self, self._export_title, headers, self._history_display, "item_history.xlsx")
 
+    def _item_summaries(self, session, item_id: int) -> tuple[dict, dict | None]:
+        current = build_item_summary(
+            session, item_id, self._nickname_map, self._lookback_weeks
+        )
+        prev_weeks = previous_lookback_weeks(self._lookback_weeks)
+        previous = (
+            build_item_summary(session, item_id, self._nickname_map, prev_weeks)
+            if prev_weeks
+            else None
+        )
+        return current, previous
+
     def _reload_item(self) -> None:
         if self._item_id is None:
             return
@@ -399,17 +420,12 @@ class ItemDetailPage(QWidget):
             self._nickname_map = load_nickname_map(session)
             self._lookback_weeks = self._detail_lookback.value()
             sync_sales_period_weeks(self._detail_lookback)
-            data = build_item_summary(
-                session,
-                self._item_id,
-                self._nickname_map,
-                self._lookback_weeks,
-            )
+            data, previous = self._item_summaries(session, self._item_id)
         if not data:
             return
         self._set_header_subtitle(data)
         self._populate_dept_combo(data.get("department_code"))
-        self._apply_summary(data)
+        self._apply_summary(data, previous)
 
     def show_item(self, sku: str) -> None:
         with get_session() as session:
@@ -426,9 +442,7 @@ class ItemDetailPage(QWidget):
                 return
             self._item_id = item.id
             self._sku = sku
-            data = build_item_summary(
-                session, item.id, self._nickname_map, self._lookback_weeks
-            )
+            data, previous = self._item_summaries(session, item.id)
 
         if not data:
             self._header.set_subtitle("Item not found")
@@ -442,9 +456,9 @@ class ItemDetailPage(QWidget):
         self._export_title = f"Item History — {data['sku']}"
         self._set_header_subtitle(data)
         self._populate_dept_combo(data.get("department_code"))
-        self._apply_summary(data)
+        self._apply_summary(data, previous)
 
-    def _apply_summary(self, data: dict) -> None:
+    def _apply_summary(self, data: dict, previous: dict | None = None) -> None:
         self._set_on_hand_value(int(data["on_hand"]))
         self._kpi_value.set_value(f"R {data['stock_value']:,.2f}")
         self._update_lookback_kpi_titles()
@@ -456,6 +470,46 @@ class ItemDetailPage(QWidget):
         self._kpi_abc.set_value(abc)
         accent = {"A": "success", "B": "warning", "C": "amber"}.get(abc)
         self._kpi_abc.set_accent(accent)
+
+        tag = previous_window_tag(self._lookback_weeks)
+        apply_previous_amount(
+            self._kpi_value,
+            data["stock_value"],
+            None if previous is None else previous.get("stock_value"),
+            formatter=format_rand,
+            tag=tag,
+        )
+        if has_charts and previous is not None:
+            apply_previous_amount(
+                self._kpi_sales,
+                data["qty_sold"],
+                previous.get("qty_sold"),
+                formatter=format_qty,
+                tag=tag,
+            )
+            apply_previous_amount(
+                self._kpi_over,
+                data["over_qty"],
+                previous.get("over_qty"),
+                formatter=format_qty,
+                tag=tag,
+            )
+            apply_previous_amount(
+                self._kpi_under,
+                data["under_qty"],
+                previous.get("under_qty"),
+                formatter=format_qty_2dp,
+                tag=tag,
+            )
+        else:
+            self._kpi_sales.set_delta("")
+            self._kpi_over.set_delta("")
+            self._kpi_under.set_delta("")
+        apply_previous_text(
+            self._kpi_abc,
+            None if previous is None else previous.get("abc_class"),
+            tag=tag,
+        )
 
         sales_chart_data = data.get("sales_chart_data") or {}
         stock_chart_data = data.get("stock_chart_data") or {}
@@ -775,14 +829,68 @@ class InventoryPage(QWidget):
                 has_enrichment=enriched,
                 lookback_weeks=self._lookback_weeks,
             )
+            tag = previous_window_tag(self._lookback_weeks)
+            prev_weeks = previous_lookback_weeks(self._lookback_weeks)
+            prev_summary = None
+            if prev_weeks and tag:
+                prev_summary = build_inventory_list_summary(
+                    session,
+                    search=self._search.text(),
+                    status=self._status_filter.currentText(),
+                    has_enrichment=enriched,
+                    dept=self._dept_filter,
+                    lookback_weeks=prev_weeks,
+                )
 
         self._inv_kpi_count.set_value(f"{summary['item_count']:,}")
         self._inv_kpi_value.set_value(f"R {summary['total_value']:,.2f}")
+        apply_previous_amount(
+            self._inv_kpi_count,
+            summary["item_count"],
+            None if prev_summary is None else prev_summary["item_count"],
+            formatter=format_int_count,
+            tag=tag,
+        )
+        apply_previous_amount(
+            self._inv_kpi_value,
+            summary["total_value"],
+            None if prev_summary is None else prev_summary["total_value"],
+            formatter=format_rand,
+            tag=tag,
+        )
         if enriched:
             self._inv_kpi_under.set_value(f"R {summary['understock_value']:,.2f}")
             self._inv_kpi_over.set_value(f"R {summary['overstock_value']:,.2f}")
             self._inv_kpi_slow.set_value(f"R {summary['slow_moving_value']:,.2f}")
             self._inv_kpi_dead.set_value(f"R {summary['dead_stock_value']:,.2f}")
+            apply_previous_amount(
+                self._inv_kpi_under,
+                summary["understock_value"],
+                None if prev_summary is None else prev_summary["understock_value"],
+                formatter=format_rand,
+                tag=tag,
+            )
+            apply_previous_amount(
+                self._inv_kpi_over,
+                summary["overstock_value"],
+                None if prev_summary is None else prev_summary["overstock_value"],
+                formatter=format_rand,
+                tag=tag,
+            )
+            apply_previous_amount(
+                self._inv_kpi_slow,
+                summary["slow_moving_value"],
+                None if prev_summary is None else prev_summary["slow_moving_value"],
+                formatter=format_rand,
+                tag=tag,
+            )
+            apply_previous_amount(
+                self._inv_kpi_dead,
+                summary["dead_stock_value"],
+                None if prev_summary is None else prev_summary["dead_stock_value"],
+                formatter=format_rand,
+                tag=tag,
+            )
             dept_view, dept_labels = build_dept_values_chart(
                 summary.get("dept_values", {}), self._nickname_map
             )
@@ -792,6 +900,7 @@ class InventoryPage(QWidget):
         else:
             for kpi in (self._inv_kpi_under, self._inv_kpi_over, self._inv_kpi_slow, self._inv_kpi_dead):
                 kpi.set_value("—")
+                kpi.set_delta("")
             self._inv_dept_chart.set_chart_view(build_stock_health_chart({}))
             self._inv_health_chart.set_chart_view(build_stock_health_chart({}))
 

@@ -189,3 +189,53 @@ def test_preview_stock_take_from_file(tmp_path, db_session):
     assert comparison.file_name == "preview.csv"
     assert len(comparison.variance_lines) == 1
     assert comparison.variance_lines[0].sku == "SKU001"
+
+
+def test_stock_take_history_previous_session_is_second_row(db_session):
+    from datetime import UTC, datetime, timedelta
+
+    from stock_analysis.analytics.kpi_previous import format_previous_kpi, format_rand
+    from stock_analysis.baseline.manager import get_stock_take_history
+    from stock_analysis.db.models import ImportBatch, StockTakeSession
+
+    now = datetime.now(UTC)
+    older_batch = ImportBatch(
+        import_type="stock_take", file_name="older.csv", status="applied"
+    )
+    newer_batch = ImportBatch(
+        import_type="stock_take", file_name="newer.csv", status="applied"
+    )
+    db_session.add_all([older_batch, newer_batch])
+    db_session.flush()
+    db_session.add_all(
+        [
+            StockTakeSession(
+                import_batch_id=older_batch.id,
+                stock_take_date="12/08/2026",
+                applied_at=now - timedelta(days=7),
+                total_items=10,
+                variance_count=2,
+                shrinkage_value=250.0,
+                overage_value=40.0,
+            ),
+            StockTakeSession(
+                import_batch_id=newer_batch.id,
+                stock_take_date="19/08/2026",
+                applied_at=now,
+                total_items=12,
+                variance_count=3,
+                shrinkage_value=800.0,
+                overage_value=10.0,
+            ),
+        ]
+    )
+    db_session.commit()
+
+    history = get_stock_take_history(db_session)
+    assert history[0]["shrinkage"] == pytest.approx(800.0)
+    previous = history[1]
+    assert previous["date"] == "12/08/2026"
+    assert previous["shrinkage"] == pytest.approx(250.0)
+    assert format_previous_kpi(format_rand(previous["shrinkage"]), previous["date"]) == (
+        "R 250.00 · 12/08/2026"
+    )

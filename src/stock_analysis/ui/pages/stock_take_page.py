@@ -11,6 +11,11 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from stock_analysis.analytics.kpi_previous import (
+    apply_previous_amount,
+    format_int_count,
+    format_rand,
+)
 from stock_analysis.baseline.manager import get_stock_take_history, get_stock_take_variance_lines
 from stock_analysis.db.session import get_session, has_initial_baseline
 from stock_analysis.ui.export_dialog import prompt_export_excel, prompt_export_pdf
@@ -121,14 +126,51 @@ class StockTakePage(QWidget):
                 self._kpi_variances.set_value("—")
                 self._kpi_shrinkage.set_value("—")
                 self._kpi_overage.set_value("—")
+                for card in (
+                    self._kpi_items,
+                    self._kpi_variances,
+                    self._kpi_shrinkage,
+                    self._kpi_overage,
+                ):
+                    card.set_delta("")
                 self._variance_rows = []
                 self._variance_table.clear_data()
             else:
                 latest = history[0]
+                previous = history[1] if len(history) > 1 else None
+                tag = None if previous is None else previous["date"]
                 self._kpi_items.set_value(f"{latest['total_items']:,}")
                 self._kpi_variances.set_value(f"{latest['variances']:,}")
                 self._kpi_shrinkage.set_value(f"R {latest['shrinkage']:,.2f}")
                 self._kpi_overage.set_value(f"R {latest['overage']:,.2f}")
+                apply_previous_amount(
+                    self._kpi_items,
+                    latest["total_items"],
+                    None if previous is None else previous["total_items"],
+                    formatter=format_int_count,
+                    tag=tag,
+                )
+                apply_previous_amount(
+                    self._kpi_variances,
+                    latest["variances"],
+                    None if previous is None else previous["variances"],
+                    formatter=format_int_count,
+                    tag=tag,
+                )
+                apply_previous_amount(
+                    self._kpi_shrinkage,
+                    latest["shrinkage"],
+                    None if previous is None else previous["shrinkage"],
+                    formatter=format_rand,
+                    tag=tag,
+                )
+                apply_previous_amount(
+                    self._kpi_overage,
+                    latest["overage"],
+                    None if previous is None else previous["overage"],
+                    formatter=format_rand,
+                    tag=tag,
+                )
 
                 lines = get_stock_take_variance_lines(session, latest["id"])
                 self._variance_rows = [

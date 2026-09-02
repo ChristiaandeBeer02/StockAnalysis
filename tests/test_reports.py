@@ -8,7 +8,6 @@ from sqlalchemy.orm import sessionmaker
 
 from stock_analysis.analytics.dashboard import (
     build_inventory_list_summary,
-    build_period_comparison,
     build_period_summary,
     build_item_summary,
     get_lookback_period_lines,
@@ -485,146 +484,112 @@ def test_margin_and_markup_alerts(db_session):
     assert fast_markup["markup_pct"] == pytest.approx(66.6666666667)
 
 
-def test_period_comparison_empty_when_lookback_one(db_session):
-    from stock_analysis.analytics.cache import invalidate_summaries
+def test_previous_lookback_weeks_none_when_lookback_one():
+    from stock_analysis.analytics.kpi_previous import previous_lookback_weeks, previous_window_tag
 
-    invalidate_summaries()
-    assert build_period_comparison(db_session, lookback_weeks=1) == {}
+    assert previous_lookback_weeks(1) is None
+    assert previous_window_tag(1) is None
 
 
-def test_period_comparison_delta_none_when_older_week_zero(db_session):
+def test_period_summary_previous_window_is_n_minus_one_weeks(db_session):
     from datetime import UTC, datetime, timedelta
 
-    from stock_analysis.analytics.cache import invalidate_summaries
+    from stock_analysis.analytics.cache import get_period_summary_cached, invalidate_summaries
+    from stock_analysis.analytics.kpi_previous import (
+        format_previous_kpi,
+        format_rand,
+        previous_lookback_weeks,
+        previous_window_tag,
+    )
 
     now = datetime.now(UTC)
     enrichment = db_session.scalar(
         select(ImportBatch).where(ImportBatch.import_type == "baseline_enrichment")
     )
-    enrichment.imported_at = now - timedelta(days=10)
-    batch_a = ImportBatch(
-        import_type="period_turn",
-        file_name="a.csv",
-        period_start="01/02/2026",
-        period_end="07/02/2026",
-        status="applied",
-        imported_at=now - timedelta(days=1),
-    )
-    batch_b = ImportBatch(
-        import_type="period_turn",
-        file_name="b.csv",
-        period_start="08/02/2026",
-        period_end="14/02/2026",
-        status="applied",
-        imported_at=now,
-    )
-    db_session.add_all([batch_a, batch_b])
-    db_session.flush()
-
+    enrichment.imported_at = now - timedelta(days=40)
     fast_item = db_session.scalar(select(Item).where(Item.sku == "FAST001"))
-    slow_item = db_session.scalar(select(Item).where(Item.sku == "SLOW001"))
-    db_session.add(
-        PeriodTurnLine(
-            import_batch_id=batch_a.id,
-            item_id=fast_item.id,
-            dept="A1",
-            on_hand=10.0,
-            qty_sold_90=100.0,
-            last_unit_cost=5.0,
-            avg_monthly_sales_3mo=33.0,
+    for i in range(4):
+        batch = ImportBatch(
+            import_type="period_turn",
+            file_name=f"w{i}.csv",
+            period_start=f"{1 + i * 7:02d}/02/2026",
+            period_end=f"{7 + i * 7:02d}/02/2026",
+            status="applied",
+            imported_at=now - timedelta(days=3 - i),
         )
-    )
-    db_session.add(
-        PeriodTurnLine(
-            import_batch_id=batch_b.id,
-            item_id=fast_item.id,
-            dept="A1",
-            on_hand=10.0,
-            qty_sold_90=100.0,
-            last_unit_cost=5.0,
-            avg_monthly_sales_3mo=33.0,
+        db_session.add(batch)
+        db_session.flush()
+        db_session.add(
+            PeriodTurnLine(
+                import_batch_id=batch.id,
+                item_id=fast_item.id,
+                dept="A1",
+                on_hand=10.0,
+                qty_sold_90=2.0,
+                last_unit_cost=5.0,
+                net_sales_revenue=10.0,
+            )
         )
-    )
-    db_session.add(
-        PeriodTurnLine(
-            import_batch_id=batch_b.id,
-            item_id=slow_item.id,
-            dept="B2",
-            on_hand=20.0,
-            qty_sold_90=0.0,
-            last_unit_cost=2.0,
-            avg_monthly_sales_3mo=0.0,
-        )
-    )
     db_session.commit()
+    db_session.info.pop("_sales_batches", None)
     invalidate_summaries()
 
-    comparison = build_period_comparison(db_session, lookback_weeks=2)
-    assert comparison["slow_moving_value_delta_pct"] is None
-    assert comparison["dead_stock_value_delta_pct"] is None
+    weeks = 5
+    prev_weeks = previous_lookback_weeks(weeks)
+    assert prev_weeks == 4
+    current = get_period_summary_cached(db_session, weeks)
+    previous = get_period_summary_cached(db_session, prev_weeks)
+    assert current["total_sales_value"] == pytest.approx(620.0)
+    assert previous["total_sales_value"] == pytest.approx(40.0)
+    tag = previous_window_tag(weeks)
+    assert tag == "4w"
+    assert format_previous_kpi(format_rand(previous["total_sales_value"]), tag) == (
+        "R 40.00 · 4w"
+    )
 
 
-def test_period_comparison_dead_stock_week_n_vs_n_minus_one(db_session):
+def test_item_summary_previous_window_qty_sold(db_session):
     from datetime import UTC, datetime, timedelta
 
-    from stock_analysis.analytics.cache import invalidate_summaries
-    from stock_analysis.analytics.dashboard import _format_delta
+    from stock_analysis.analytics.kpi_previous import previous_lookback_weeks
 
     now = datetime.now(UTC)
     enrichment = db_session.scalar(
         select(ImportBatch).where(ImportBatch.import_type == "baseline_enrichment")
     )
-    enrichment.imported_at = now - timedelta(days=20)
-    batch_older = ImportBatch(
-        import_type="period_turn",
-        file_name="older.csv",
-        period_start="01/02/2026",
-        period_end="07/02/2026",
-        status="applied",
-        imported_at=now - timedelta(days=7),
-    )
-    batch_newer = ImportBatch(
-        import_type="period_turn",
-        file_name="newer.csv",
-        period_start="08/02/2026",
-        period_end="14/02/2026",
-        status="applied",
-        imported_at=now,
-    )
-    db_session.add_all([batch_older, batch_newer])
-    db_session.flush()
-
-    slow_item = db_session.scalar(select(Item).where(Item.sku == "SLOW001"))
-    db_session.add(
-        PeriodTurnLine(
-            import_batch_id=batch_older.id,
-            item_id=slow_item.id,
-            dept="B2",
-            on_hand=20.0,
-            qty_sold_90=0.0,
-            last_unit_cost=50.0,
-            avg_monthly_sales_3mo=0.0,
+    enrichment.imported_at = now - timedelta(days=40)
+    fast_item = db_session.scalar(select(Item).where(Item.sku == "FAST001"))
+    for i in range(4):
+        batch = ImportBatch(
+            import_type="period_turn",
+            file_name=f"w{i}.csv",
+            period_start=f"{1 + i * 7:02d}/02/2026",
+            period_end=f"{7 + i * 7:02d}/02/2026",
+            status="applied",
+            imported_at=now - timedelta(days=3 - i),
         )
-    )
-    db_session.add(
-        PeriodTurnLine(
-            import_batch_id=batch_newer.id,
-            item_id=slow_item.id,
-            dept="B2",
-            on_hand=20.0,
-            qty_sold_90=0.0,
-            last_unit_cost=75.0,
-            avg_monthly_sales_3mo=0.0,
+        db_session.add(batch)
+        db_session.flush()
+        db_session.add(
+            PeriodTurnLine(
+                import_batch_id=batch.id,
+                item_id=fast_item.id,
+                dept="A1",
+                on_hand=10.0,
+                qty_sold_90=2.0,
+                last_unit_cost=5.0,
+                net_sales_revenue=10.0,
+            )
         )
-    )
     db_session.commit()
-    invalidate_summaries()
+    db_session.info.pop("_sales_batches", None)
 
-    comparison = build_period_comparison(db_session, lookback_weeks=2)
-    assert comparison["dead_stock_value_delta_pct"] == pytest.approx(50.0)
-    text, direction = _format_delta(comparison["dead_stock_value_delta_pct"], 2)
-    assert text == "▲ 50.0% vs 2w ago"
-    assert direction == "up"
+    current = build_item_summary(db_session, fast_item.id, lookback_weeks=5)
+    previous = build_item_summary(
+        db_session, fast_item.id, lookback_weeks=previous_lookback_weeks(5)
+    )
+    assert current["qty_sold"] == pytest.approx(108.0)
+    assert previous["qty_sold"] == pytest.approx(8.0)
 
 
 def test_top_sellers_respects_lookback_weeks(db_session):
