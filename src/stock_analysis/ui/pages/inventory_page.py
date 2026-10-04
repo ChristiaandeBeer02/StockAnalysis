@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime
 
 from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtWidgets import (
@@ -38,6 +39,7 @@ from stock_analysis.analytics.department_names import (
     update_item_department,
 )
 from stock_analysis.analytics.inventory_queries import list_inventory_departments
+from stock_analysis.analytics.queries import get_holding_weeks
 from stock_analysis.analytics.kpi_previous import (
     apply_previous_amount,
     apply_previous_text,
@@ -597,6 +599,9 @@ class InventoryPage(QWidget):
         )
         self._list_header.add_control(QLabel("Sales period:"))
         self._list_header.add_control(self._list_lookback)
+        export_btn = QPushButton("Export Excel…")
+        export_btn.clicked.connect(self._export_inventory)
+        self._list_header.add_control(export_btn)
         content.addWidget(self._list_header)
 
         self._tabs = QTabWidget()
@@ -919,6 +924,28 @@ class InventoryPage(QWidget):
     def _update_table_subtitle(self) -> None:
         total = self._inventory_model.total_count
         self._table_tile.set_subtitle(f"{total:,} items match filters")
+
+    def _export_inventory(self) -> None:
+        title_parts = ["Inventory"]
+        status = self._status_filter.currentText()
+        if status and status != "All":
+            title_parts.append(status)
+        if self._dept_filter:
+            title_parts.append(display_dept(self._dept_filter, self._nickname_map))
+        search = self._search.text().strip()
+        if search:
+            title_parts.append(f"search: {search}")
+        title_parts.append(sales_period_label(self._lookback_weeks))
+        stamp = datetime.now()
+        title_parts.append(stamp.strftime("%Y-%m-%d %H:%M"))
+        title = " — ".join(title_parts)
+        prompt_export_excel(
+            self,
+            title,
+            self._inventory_model.headers(),
+            self._inventory_model.export_rows(),
+            f"inventory_{stamp.strftime('%Y-%m-%d_%H%M')}.xlsx",
+        )
 
     def _remove_deprecated(self) -> None:
         with get_session() as session:

@@ -113,7 +113,7 @@ _DEAD_MODE = {
 
 _SALES_MODE = {
     "title": "Sales",
-    "headers": ["SKU", "Name", "Dept", "Qty", "Sales Value", "Gross Profit"],
+    "headers": ["SKU", "Name", "On Hand", "Dept", "Qty", "Sales Value", "Gross Profit"],
     "filename": "sales",
 }
 
@@ -517,7 +517,7 @@ class HomePage(QWidget):
         _SLOW_MODE["headers"][3] = sales_period_label(weeks)
         _DEAD_MODE["headers"][3] = sales_period_label(weeks)
         _SALES_MODE["title"] = units_sold_label(weeks)
-        _SALES_MODE["headers"][3] = qty_column_label(weeks)
+        _SALES_MODE["headers"][4] = qty_column_label(weeks)
         _SALES_MODE["filename"] = f"sales_{label}"
         _STOCK_ALERT_MODES["understock"]["headers"][3] = under_qty_label(
             self._holding_spin.value()
@@ -906,10 +906,11 @@ class HomePage(QWidget):
         header.setSectionResizeMode(QHeaderView.ResizeMode.Fixed)
         header.setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
         header.resizeSection(0, 100)
-        header.resizeSection(2, 80)
+        header.resizeSection(2, 72)
         header.resizeSection(3, 80)
-        header.resizeSection(4, 100)
+        header.resizeSection(4, 80)
         header.resizeSection(5, 100)
+        header.resizeSection(6, 100)
 
     def _configure_slow_table_columns(self) -> None:
         header = self._slow_table.horizontalHeader()
@@ -1000,6 +1001,7 @@ class HomePage(QWidget):
             [
                 r["code"],
                 r["name"],
+                f"{r.get('on_hand', 0.0):g}",
                 display_dept(r.get("dept", "—"), self._nickname_map),
                 f"{r['qty_sold']:g}",
                 f"R {r['sales_value']:,.2f}",

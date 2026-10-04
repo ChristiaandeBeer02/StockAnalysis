@@ -239,6 +239,7 @@
         "dept": "A1",
         "gross_profit": 0.0,
         "name": "Widget Alpha Test Item*1/1/26",
+        "on_hand": 8.0,
         "qty_sold": 2.0,
         "sales_value": 10.0
       },
@@ -247,6 +248,7 @@
         "dept": "A1",
         "gross_profit": 0.0,
         "name": "Widget Beta Test Item*1/1/26",
+        "on_hand": 3.0,
         "qty_sold": 5.0,
         "sales_value": 25.0
       },
@@ -255,6 +257,7 @@
         "dept": "A1",
         "gross_profit": 0.0,
         "name": "Widget Delta Fast Seller*1/1/26",
+        "on_hand": 10.0,
         "qty_sold": 10.0,
         "sales_value": 50.0
       }

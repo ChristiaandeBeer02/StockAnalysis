@@ -250,8 +250,6 @@ def build_period_summary(
     if not batch or not lines:
         return {}
 
-    item_ids = [item.id for _, item in lines]
-    baseline_map = baseline_qty_map(session, item_ids)
     holding_weeks = get_holding_weeks(session)
     min_buffer_pct, max_buffer_pct = get_stock_buffer_pct_range(session)
     qty_map = build_multi_batch_qty_map(
@@ -260,6 +258,8 @@ def build_period_summary(
     sales_totals = build_multi_batch_sales_totals(
         session, lookback_weeks, offset=sales_batch_offset
     )
+    item_ids = list({item.id for _, item in lines} | set(qty_map.keys()))
+    baseline_map = baseline_qty_map(session, item_ids)
 
     def _item_qty(_line: PeriodTurnLine, item_id: int) -> float:
         return item_qty_sold(qty_map, item_id)
@@ -478,6 +478,9 @@ def build_period_summary(
             "code": item.sku,
             "name": item.name[:40],
             "dept": (line.dept if line else None) or item.department or "Unknown",
+            "on_hand": effective_on_hand(
+                baseline_map, item.id, line.on_hand if line else 0.0
+            ),
             "qty_sold": qty,
             "sales_value": resolve_sales_value(
                 item_sales_totals(sales_totals, item.id)[0],

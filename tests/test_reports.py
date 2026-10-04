@@ -673,6 +673,7 @@ def test_top_sellers_ranked_by_gross_profit(db_session):
     sales_codes = [row["code"] for row in summary["sales_items"]]
     assert sales_codes[0] == "FAST001"
     assert all("gross_profit" in row for row in summary["sales_items"])
+    assert all("on_hand" in row for row in summary["sales_items"])
 
 
 def test_reorder_alerts_respects_lookback_weeks(db_session):

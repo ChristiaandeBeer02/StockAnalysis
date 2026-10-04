@@ -79,6 +79,12 @@ class InventoryTableModel(QAbstractTableModel):
     def total_count(self) -> int:
         return len(self._rows)
 
+    def headers(self) -> list[str]:
+        return list(self._headers)
+
+    def export_rows(self) -> list[list[str]]:
+        return [list(row) for row in self._rows]
+
     def sku_at(self, row: int) -> str | None:
         if 0 <= row < len(self._rows):
             return self._rows[row][0]
