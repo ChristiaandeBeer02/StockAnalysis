@@ -679,6 +679,21 @@ def filter_stock_rows(
     return result
 
 
+def rank_top_sellers(
+    rows: list[dict],
+    *,
+    dept: str | None = None,
+    limit: int = 50,
+) -> list[dict]:
+    filtered = filter_stock_rows(rows, dept=dept)
+    ranked = sorted(
+        filtered,
+        key=lambda row: (row.get("gross_profit", 0.0), row.get("qty_sold", 0.0)),
+        reverse=True,
+    )
+    return ranked[:limit]
+
+
 def _item_abc_class(
     session: Session,
     sku: str,

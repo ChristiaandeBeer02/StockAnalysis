@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime
 
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QColor
@@ -27,6 +28,7 @@ from stock_analysis.analytics.cache import get_period_summary_cached, load_summa
 from stock_analysis.analytics.dashboard import (
     build_inventory_list_summary,
     filter_stock_rows,
+    rank_top_sellers,
 )
 from stock_analysis.analytics.kpi_previous import (
     apply_previous_amount,
@@ -273,6 +275,9 @@ class HomePage(QWidget):
         overview_layout.addWidget(self._dept_chart, 1, 0, 1, 6)
 
         self._sellers_tile = DashboardTile("Top Sellers")
+        self._export_sellers_btn = QPushButton("Export Excel…")
+        self._export_sellers_btn.clicked.connect(self._export_top_sellers)
+        self._sellers_tile.add_action(self._export_sellers_btn)
         self._sellers_table = DataTable()
         self._sellers_table.setSortingEnabled(False)
         self._sellers_table.setSizePolicy(
@@ -823,22 +828,9 @@ class HomePage(QWidget):
             )
             self._dept_chart.set_chart_view(dept_view, dept_labels)
 
-            filtered_sales = filter_stock_rows(self._sales_rows, dept=self._dept)
-            top_sellers = sorted(
-                filtered_sales,
-                key=lambda row: (row.get("gross_profit", 0.0), row["qty_sold"]),
-                reverse=True,
-            )[:20]
-            top_seller_data = [
-                {
-                    "code": row["code"],
-                    "name": row["name"],
-                    "qty_sold": row["qty_sold"],
-                    "gross_profit": row.get("gross_profit", 0.0),
-                }
-                for row in top_sellers
-            ]
-            self._populate_sellers_table(top_seller_data)
+            self._populate_sellers_table(
+                rank_top_sellers(self._sales_rows, dept=self._dept, limit=20)
+            )
 
             if self._show_overview_health:
                 health = inventory_summary.get("stock_health") or {}
@@ -1116,6 +1108,37 @@ class HomePage(QWidget):
             ]
             for r in rows
         ]
+
+    def _export_top_sellers(self) -> None:
+        sellers = rank_top_sellers(self._sales_rows, dept=self._dept, limit=50)
+        qty_header = qty_column_label(self._lookback_weeks)
+        headers = ["#", "Code", "Product", qty_header, "Gross Profit"]
+        rows = [
+            [
+                str(i),
+                s["code"],
+                s["name"],
+                f"{s['qty_sold']:g}",
+                f"R {s.get('gross_profit', 0.0):,.2f}",
+            ]
+            for i, s in enumerate(sellers, start=1)
+        ]
+        title_parts = ["Top Sellers"]
+        if self._dept:
+            title_parts.append(display_dept(self._dept, self._nickname_map))
+        title_parts.append(lookback_label(self._lookback_weeks))
+        period = self._period
+        if period.get("period_start") and period.get("period_end"):
+            title_parts.append(f"{period['period_start']} – {period['period_end']}")
+        stamp = datetime.now()
+        title_parts.append(stamp.strftime("%Y-%m-%d %H:%M"))
+        prompt_export_excel(
+            self,
+            " — ".join(title_parts),
+            headers,
+            rows,
+            f"top_sellers_{stamp.strftime('%Y-%m-%d_%H%M')}.xlsx",
+        )
 
     def _export_table(self, table_key: str, fmt: str) -> None:
         if table_key == "alerts":

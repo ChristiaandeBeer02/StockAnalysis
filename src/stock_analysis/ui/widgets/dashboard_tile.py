@@ -1,5 +1,6 @@
 """Power BI-style visual tile container."""
 
+from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QFrame, QHBoxLayout, QLabel, QSizePolicy, QVBoxLayout, QWidget
 
 
@@ -23,16 +24,21 @@ class DashboardTile(QFrame):
         titles.setSpacing(2)
         self._title = QLabel(title)
         self._title.setObjectName("tileTitle")
+        self._title.setSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Fixed)
         self._subtitle = QLabel(subtitle)
         self._subtitle.setObjectName("tileSubtitle")
+        self._subtitle.setSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Fixed)
         self._subtitle.setVisible(bool(subtitle))
         titles.addWidget(self._title)
         titles.addWidget(self._subtitle)
-        header.addLayout(titles, stretch=1)
+        header.addLayout(titles)
+        header.setAlignment(titles, Qt.AlignmentFlag.AlignVCenter)
+        header.addStretch(1)
 
         self._actions = QHBoxLayout()
         self._actions.setSpacing(6)
         header.addLayout(self._actions)
+        header.setAlignment(self._actions, Qt.AlignmentFlag.AlignVCenter)
         root.addLayout(header)
 
         self._content = QWidget()

@@ -12,6 +12,7 @@ from stock_analysis.analytics.dashboard import (
     build_item_summary,
     get_lookback_period_lines,
     list_period_batches,
+    rank_top_sellers,
 )
 from stock_analysis.analytics.lookback import build_multi_batch_qty_map, item_qty_sold
 from stock_analysis.analytics.metrics import (
@@ -674,6 +675,34 @@ def test_top_sellers_ranked_by_gross_profit(db_session):
     assert sales_codes[0] == "FAST001"
     assert all("gross_profit" in row for row in summary["sales_items"])
     assert all("on_hand" in row for row in summary["sales_items"])
+
+
+def test_rank_top_sellers_filters_and_limits():
+    rows = [
+        {"code": "A", "dept": "X", "qty_sold": 10, "gross_profit": 5.0},
+        {"code": "B", "dept": "Y", "qty_sold": 1, "gross_profit": 100.0},
+        {"code": "C", "dept": "X", "qty_sold": 50, "gross_profit": 5.0},
+        {"code": "D", "dept": "X", "qty_sold": 2, "gross_profit": 20.0},
+    ]
+    ranked = rank_top_sellers(rows, dept="X")
+    assert [r["code"] for r in ranked] == ["D", "C", "A"]
+
+    capped = rank_top_sellers(
+        [
+            {
+                "code": str(i),
+                "dept": "X",
+                "qty_sold": float(i),
+                "gross_profit": float(i),
+            }
+            for i in range(60)
+        ],
+        dept="X",
+        limit=50,
+    )
+    assert len(capped) == 50
+    assert capped[0]["code"] == "59"
+    assert capped[-1]["code"] == "10"
 
 
 def test_reorder_alerts_respects_lookback_weeks(db_session):

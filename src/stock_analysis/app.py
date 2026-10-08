@@ -105,6 +105,16 @@ QWidget {
 #dashboardTile QWidget {
     background: transparent;
 }
+#dashboardTile QPushButton {
+    background-color: #2563eb;
+    color: #ffffff;
+    border: none;
+    padding: 4px 10px;
+}
+#dashboardTile QPushButton:hover {
+    background-color: #1d4ed8;
+    color: #ffffff;
+}
 #tileTitle {
     font-size: 13px;
     font-weight: 600;
