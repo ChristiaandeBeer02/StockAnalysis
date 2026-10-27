@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Iterator
 
-from sqlalchemy import or_, select
+from sqlalchemy import exists, or_, select
 from sqlalchemy.orm import Session
 
 from stock_analysis.analytics.dashboard import (
@@ -267,6 +267,36 @@ def list_item_departments(session: Session, *, status: str = "Active") -> list[s
     if clause is not None:
         query = query.where(clause)
     return [dept for dept in session.scalars(query).all() if dept]
+
+
+def list_no_movement_items(session: Session) -> list[dict]:
+    """Baseline SKUs that have never received a PeriodTurnLine."""
+    has_turn = exists().where(PeriodTurnLine.item_id == Item.id)
+    query = (
+        select(Item, BaselineItem)
+        .join(BaselineItem, BaselineItem.item_id == Item.id)
+        .where(Item.is_deprecated.is_(False))
+        .where(~has_turn)
+        .order_by(Item.sku)
+    )
+    rows: list[dict] = []
+    for item, baseline in session.execute(query).all():
+        if should_skip_item(item.sku, item.name):
+            continue
+        qty = baseline.qty_on_hand
+        cost = effective_unit_cost(None, item)
+        rows.append(
+            {
+                "code": item.sku,
+                "name": item.name[:40],
+                "on_hand": qty,
+                "qty_sold": 0.0,
+                "dept": item.department or "Unknown",
+                "unit_cost": cost,
+                "stock_value": stock_value(qty, cost),
+            }
+        )
+    return rows
 
 
 def fetch_inventory_rows(

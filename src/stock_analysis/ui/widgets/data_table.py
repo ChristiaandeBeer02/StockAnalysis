@@ -1,7 +1,7 @@
 """Sortable data table widget."""
 
 from PySide6.QtCore import QSize, Qt
-from PySide6.QtGui import QColor, QPalette, QStandardItem, QStandardItemModel
+from PySide6.QtGui import QColor, QKeySequence, QPalette, QStandardItem, QStandardItemModel
 from PySide6.QtWidgets import QAbstractItemView, QHeaderView, QSizePolicy, QTableView
 
 from stock_analysis.ui.sort_helpers import SORT_ROLE, cell_sort_value
@@ -19,7 +19,9 @@ class DataTable(QTableView):
         self.setSortingEnabled(True)
         self.setAlternatingRowColors(True)
         self.setSelectionBehavior(QTableView.SelectionBehavior.SelectRows)
-        self.setSelectionMode(QTableView.SelectionMode.SingleSelection)
+        self.setSelectionMode(QTableView.SelectionMode.ExtendedSelection)
+        self.setDragDropMode(QAbstractItemView.DragDropMode.NoDragDrop)
+        self.setDragEnabled(False)
         self.horizontalHeader().setStretchLastSection(True)
         self.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
         self.verticalHeader().setVisible(False)
@@ -88,6 +90,45 @@ class DataTable(QTableView):
 
     def clear_data(self) -> None:
         self._model.setRowCount(0)
+
+    def headers(self) -> list[str]:
+        model = self.model()
+        return [
+            str(model.headerData(column, Qt.Orientation.Horizontal) or "")
+            for column in range(model.columnCount())
+        ]
+
+    def selected_row_indices(self) -> list[int]:
+        selection = self.selectionModel()
+        if selection is None:
+            return []
+        return sorted({index.row() for index in selection.selectedRows()})
+
+    def rows_as_lists(self, indices: list[int] | None = None) -> list[list[str]]:
+        model = self.model()
+        if indices is None:
+            indices = list(range(model.rowCount()))
+        columns = model.columnCount()
+        rows: list[list[str]] = []
+        for row in indices:
+            values = []
+            for column in range(columns):
+                value = model.index(row, column).data(Qt.ItemDataRole.DisplayRole)
+                values.append("" if value is None else str(value))
+            rows.append(values)
+        return rows
+
+    def clear_selection(self) -> None:
+        selection = self.selectionModel()
+        if selection is not None:
+            selection.clearSelection()
+
+    def keyPressEvent(self, event) -> None:
+        if event.matches(QKeySequence.StandardKey.SelectAll):
+            self.selectAll()
+            event.accept()
+            return
+        super().keyPressEvent(event)
 
     def resize_height_to_contents(self, *, max_rows: int | None = None) -> None:
         """Grow vertically to fit rows; parent scroll area handles overflow."""

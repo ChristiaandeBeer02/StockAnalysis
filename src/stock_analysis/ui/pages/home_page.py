@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from datetime import datetime
 
 from PySide6.QtCore import Qt, Signal
-from PySide6.QtGui import QColor
+from PySide6.QtGui import QColor, QHideEvent
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QComboBox,
@@ -48,8 +48,9 @@ from stock_analysis.analytics.lookback import (
 )
 from stock_analysis.analytics.dashboard_config import get_dashboard_config
 from stock_analysis.analytics.department_names import display_dept, load_nickname_map
+from stock_analysis.analytics.inventory_queries import list_no_movement_items
 from stock_analysis.db.session import get_session, has_enrichment, has_initial_baseline
-from stock_analysis.ui.export_dialog import prompt_export_excel, prompt_export_pdf
+from stock_analysis.ui.export_dialog import attach_table_export
 from stock_analysis.ui.pages.stock_take_page import StockTakePage
 from stock_analysis.ui.widgets.chart_builders import (
     build_dept_values_chart,
@@ -113,6 +114,12 @@ _DEAD_MODE = {
     "filename": "dead_stock",
 }
 
+_NO_MOVEMENT_MODE = {
+    "title": "No Movement",
+    "headers": ["SKU", "Name", "On Hand", "Sales", "Unit Cost", "Stock Value", "Dept"],
+    "filename": "no_movement",
+}
+
 _SALES_MODE = {
     "title": "Sales",
     "headers": ["SKU", "Name", "On Hand", "Dept", "Qty", "Sales Value", "Gross Profit"],
@@ -124,9 +131,10 @@ _STOCK_ALERTS_TAB = 1
 _SALES_TAB = 2
 _SLOW_TAB = 3
 _DEAD_TAB = 4
-_IMPORT_TAB = 5
+_NO_MOVEMENT_TAB = 5
+_IMPORT_TAB = 6
 
-_SCROLLABLE_TABS = {_STOCK_ALERTS_TAB, _SALES_TAB, _SLOW_TAB, _DEAD_TAB}
+_SCROLLABLE_TABS = {_STOCK_ALERTS_TAB, _SALES_TAB, _SLOW_TAB, _DEAD_TAB, _NO_MOVEMENT_TAB}
 
 
 @dataclass
@@ -162,11 +170,13 @@ class HomePage(QWidget):
         self._markup_rows: list[dict] = []
         self._slow_rows: list[dict] = []
         self._dead_rows: list[dict] = []
+        self._no_movement_rows: list[dict] = []
         self._sales_rows: list[dict] = []
         self._alerts_display_rows: list[list] = []
         self._sales_display_rows: list[list] = []
         self._slow_display_rows: list[list] = []
         self._dead_display_rows: list[list] = []
+        self._no_movement_display_rows: list[list] = []
         self._lookback_weeks = 1
         self._prev_sales_rows: list[dict] = []
         self._show_overview_kpis = True
@@ -275,9 +285,6 @@ class HomePage(QWidget):
         overview_layout.addWidget(self._dept_chart, 1, 0, 1, 6)
 
         self._sellers_tile = DashboardTile("Top Sellers")
-        self._export_sellers_btn = QPushButton("Export Excel…")
-        self._export_sellers_btn.clicked.connect(self._export_top_sellers)
-        self._sellers_tile.add_action(self._export_sellers_btn)
         self._sellers_table = DataTable()
         self._sellers_table.setSortingEnabled(False)
         self._sellers_table.setSizePolicy(
@@ -287,6 +294,13 @@ class HomePage(QWidget):
         self._sellers_table.setVerticalScrollMode(QAbstractItemView.ScrollMode.ScrollPerPixel)
         self._sellers_table.doubleClicked.connect(self._on_sellers_double_click)
         self._configure_sellers_table_columns()
+        attach_table_export(
+            self,
+            self._sellers_tile,
+            self._sellers_table,
+            self._sellers_export_title,
+            "top_sellers",
+        )
         self._sellers_tile.set_content(self._sellers_table)
         self._health_chart = ChartTile("Stock Health")
         overview_layout.addWidget(self._sellers_tile, 2, 0, 1, 3)
@@ -344,17 +358,18 @@ class HomePage(QWidget):
         alerts_layout.addLayout(alerts_filters)
 
         self._alerts_tile = DashboardTile("Stock Alerts")
-        export_xlsx = QPushButton("Export Excel…")
-        export_pdf = QPushButton("Export PDF…")
-        export_xlsx.clicked.connect(lambda: self._export_table("alerts", "excel"))
-        export_pdf.clicked.connect(lambda: self._export_table("alerts", "pdf"))
-        self._alerts_tile.add_action(export_xlsx)
-        self._alerts_tile.add_action(export_pdf)
         self._alerts_table = DataTable()
         self._alerts_table.enable_viewport_scrolling()
         self._alerts_table.enable_compact_rows()
         self._alerts_table.doubleClicked.connect(
             lambda index: self._on_table_double_click(self._alerts_table, index)
+        )
+        attach_table_export(
+            self,
+            self._alerts_tile,
+            self._alerts_table,
+            lambda: self._mode_export_title(_STOCK_ALERT_MODES[self._alert_type]),
+            lambda: _STOCK_ALERT_MODES[self._alert_type]["filename"],
         )
         alerts_panel, self._alerts_footer = self._build_table_panel(self._alerts_table)
         self._alerts_tile.setSizePolicy(
@@ -371,17 +386,18 @@ class HomePage(QWidget):
         sales_layout.setSpacing(12)
 
         self._sales_tile = DashboardTile("Units Sold")
-        sales_export_xlsx = QPushButton("Export Excel…")
-        sales_export_pdf = QPushButton("Export PDF…")
-        sales_export_xlsx.clicked.connect(lambda: self._export_table("sales", "excel"))
-        sales_export_pdf.clicked.connect(lambda: self._export_table("sales", "pdf"))
-        self._sales_tile.add_action(sales_export_xlsx)
-        self._sales_tile.add_action(sales_export_pdf)
         self._sales_table = DataTable()
         self._sales_table.enable_viewport_scrolling()
         self._sales_table.enable_compact_rows()
         self._sales_table.doubleClicked.connect(
             lambda index: self._on_table_double_click(self._sales_table, index)
+        )
+        attach_table_export(
+            self,
+            self._sales_tile,
+            self._sales_table,
+            lambda: self._mode_export_title(_SALES_MODE),
+            "sales",
         )
         sales_panel, self._sales_footer = self._build_table_panel(self._sales_table)
         self._sales_tile.setSizePolicy(
@@ -397,17 +413,18 @@ class HomePage(QWidget):
         slow_layout.setSpacing(12)
 
         self._slow_tile = DashboardTile("Slow Moving Items")
-        slow_export_xlsx = QPushButton("Export Excel…")
-        slow_export_pdf = QPushButton("Export PDF…")
-        slow_export_xlsx.clicked.connect(lambda: self._export_table("slow", "excel"))
-        slow_export_pdf.clicked.connect(lambda: self._export_table("slow", "pdf"))
-        self._slow_tile.add_action(slow_export_xlsx)
-        self._slow_tile.add_action(slow_export_pdf)
         self._slow_table = DataTable()
         self._slow_table.enable_viewport_scrolling()
         self._slow_table.enable_compact_rows()
         self._slow_table.doubleClicked.connect(
             lambda index: self._on_table_double_click(self._slow_table, index)
+        )
+        attach_table_export(
+            self,
+            self._slow_tile,
+            self._slow_table,
+            lambda: self._mode_export_title(_SLOW_MODE),
+            "slow_moving",
         )
         slow_panel, self._slow_footer = self._build_table_panel(self._slow_table)
         self._slow_tile.setSizePolicy(
@@ -423,17 +440,18 @@ class HomePage(QWidget):
         dead_layout.setSpacing(12)
 
         self._dead_tile = DashboardTile("Dead Stock")
-        dead_export_xlsx = QPushButton("Export Excel…")
-        dead_export_pdf = QPushButton("Export PDF…")
-        dead_export_xlsx.clicked.connect(lambda: self._export_table("dead", "excel"))
-        dead_export_pdf.clicked.connect(lambda: self._export_table("dead", "pdf"))
-        self._dead_tile.add_action(dead_export_xlsx)
-        self._dead_tile.add_action(dead_export_pdf)
         self._dead_table = DataTable()
         self._dead_table.enable_viewport_scrolling()
         self._dead_table.enable_compact_rows()
         self._dead_table.doubleClicked.connect(
             lambda index: self._on_table_double_click(self._dead_table, index)
+        )
+        attach_table_export(
+            self,
+            self._dead_tile,
+            self._dead_table,
+            lambda: self._mode_export_title(_DEAD_MODE),
+            "dead_stock",
         )
         dead_panel, self._dead_footer = self._build_table_panel(self._dead_table)
         self._dead_tile.setSizePolicy(
@@ -441,6 +459,35 @@ class HomePage(QWidget):
         )
         self._dead_tile.set_content(dead_panel)
         dead_layout.addWidget(self._dead_tile, stretch=1)
+
+        no_movement_tab = QWidget()
+        no_movement_tab.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        no_movement_layout = QVBoxLayout(no_movement_tab)
+        no_movement_layout.setContentsMargins(4, 8, 4, 4)
+        no_movement_layout.setSpacing(12)
+
+        self._no_movement_tile = DashboardTile("No Movement")
+        self._no_movement_table = DataTable()
+        self._no_movement_table.enable_viewport_scrolling()
+        self._no_movement_table.enable_compact_rows()
+        self._no_movement_table.doubleClicked.connect(
+            lambda index: self._on_table_double_click(self._no_movement_table, index)
+        )
+        attach_table_export(
+            self,
+            self._no_movement_tile,
+            self._no_movement_table,
+            lambda: self._mode_export_title(_NO_MOVEMENT_MODE),
+            "no_movement",
+        )
+        no_movement_panel, self._no_movement_footer = self._build_table_panel(
+            self._no_movement_table
+        )
+        self._no_movement_tile.setSizePolicy(
+            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding
+        )
+        self._no_movement_tile.set_content(no_movement_panel)
+        no_movement_layout.addWidget(self._no_movement_tile, stretch=1)
 
         import_tab = QWidget()
         import_tab.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
@@ -487,6 +534,7 @@ class HomePage(QWidget):
         self._tabs.addTab(sales_tab, "Sales")
         self._tabs.addTab(slow_tab, "Slow Moving")
         self._tabs.addTab(dead_tab, "Dead Stock")
+        self._tabs.addTab(no_movement_tab, "No Movement")
         self._tabs.addTab(import_tab, "Import")
         self._tabs.currentChanged.connect(self._on_home_tab_changed)
         self._dash_layout = dash
@@ -521,6 +569,7 @@ class HomePage(QWidget):
         self._sales_tile.set_title(units_sold_label(weeks))
         _SLOW_MODE["headers"][3] = sales_period_label(weeks)
         _DEAD_MODE["headers"][3] = sales_period_label(weeks)
+        _NO_MOVEMENT_MODE["headers"][3] = sales_period_label(weeks)
         _SALES_MODE["title"] = units_sold_label(weeks)
         _SALES_MODE["headers"][4] = qty_column_label(weeks)
         _SALES_MODE["filename"] = f"sales_{label}"
@@ -532,6 +581,7 @@ class HomePage(QWidget):
         )
 
     def _on_home_tab_changed(self, index: int) -> None:
+        self._clear_home_table_selections()
         on_import = index == _IMPORT_TAB
         on_data_tab = index in _SCROLLABLE_TABS
         if on_import or on_data_tab:
@@ -563,6 +613,8 @@ class HomePage(QWidget):
             self._apply_slow_filter()
         elif index == _DEAD_TAB:
             self._apply_dead_filter()
+        elif index == _NO_MOVEMENT_TAB:
+            self._apply_no_movement_filter()
 
         if on_import:
             self._stock_take.refresh()
@@ -708,6 +760,7 @@ class HomePage(QWidget):
         self._apply_sales_filter()
         self._apply_slow_filter()
         self._apply_dead_filter()
+        self._apply_no_movement_filter()
 
     @staticmethod
     def _filter_dept_dict(values: dict[str, float], dept: str | None) -> dict[str, float]:
@@ -929,6 +982,18 @@ class HomePage(QWidget):
         header.resizeSection(5, 90)
         header.resizeSection(6, 80)
 
+    def _configure_no_movement_table_columns(self) -> None:
+        header = self._no_movement_table.horizontalHeader()
+        header.setStretchLastSection(False)
+        header.setSectionResizeMode(QHeaderView.ResizeMode.Fixed)
+        header.setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
+        header.resizeSection(0, 100)
+        header.resizeSection(2, 72)
+        header.resizeSection(3, 80)
+        header.resizeSection(4, 90)
+        header.resizeSection(5, 90)
+        header.resizeSection(6, 80)
+
     def _configure_sellers_table_columns(self) -> None:
         header = self._sellers_table.horizontalHeader()
         header.setStretchLastSection(False)
@@ -1064,6 +1129,30 @@ class HomePage(QWidget):
         total = sum(r["stock_value"] for r in filtered)
         self._dead_footer.setText(self._format_total("Stock Value", total))
 
+    def _apply_no_movement_filter(self) -> None:
+        filtered = filter_stock_rows(self._no_movement_rows, dept=self._dept)
+        self._no_movement_display_rows = [
+            [
+                r["code"],
+                r["name"],
+                f"{r['on_hand']:g}",
+                f"{r['qty_sold']:g}",
+                f"R {r['unit_cost']:,.2f}",
+                f"R {r['stock_value']:,.2f}",
+                display_dept(r.get("dept", "—"), self._nickname_map),
+            ]
+            for r in filtered
+        ]
+        self._no_movement_table.set_headers(_NO_MOVEMENT_MODE["headers"])
+        self._no_movement_table.set_rows(self._no_movement_display_rows)
+        self._configure_no_movement_table_columns()
+        sub = f"Showing {len(filtered):,} of {len(self._no_movement_rows):,}"
+        if self._dept:
+            sub += f" · Dept: {display_dept(self._dept, self._nickname_map)}"
+        self._no_movement_tile.set_subtitle(sub)
+        total = sum(r["stock_value"] for r in filtered)
+        self._no_movement_footer.setText(self._format_total("Stock Value", total))
+
     def _rows_to_display(self, rows: list[dict], mode: str) -> list[list]:
         if mode == "overstock":
             return [
@@ -1109,68 +1198,46 @@ class HomePage(QWidget):
             for r in rows
         ]
 
-    def _export_top_sellers(self) -> None:
-        sellers = rank_top_sellers(self._sales_rows, dept=self._dept, limit=50)
-        qty_header = qty_column_label(self._lookback_weeks)
-        headers = ["#", "Code", "Product", qty_header, "Gross Profit"]
-        rows = [
-            [
-                str(i),
-                s["code"],
-                s["name"],
-                f"{s['qty_sold']:g}",
-                f"R {s.get('gross_profit', 0.0):,.2f}",
-            ]
-            for i, s in enumerate(sellers, start=1)
+    def _home_tables(self) -> list[DataTable]:
+        return [
+            self._sellers_table,
+            self._alerts_table,
+            self._sales_table,
+            self._slow_table,
+            self._dead_table,
+            self._no_movement_table,
         ]
+
+    def _clear_home_table_selections(self) -> None:
+        for table in self._home_tables():
+            table.clear_selection()
+
+    def hideEvent(self, event: QHideEvent) -> None:
+        self._clear_home_table_selections()
+        super().hideEvent(event)
+
+    def _period_span_label(self) -> str:
+        period = self._period
+        if period.get("period_start") and period.get("period_end"):
+            return f"{period['period_start']} – {period['period_end']}"
+        return ""
+
+    def _mode_export_title(self, cfg: dict) -> str:
+        period_label = self._period_span_label()
+        if period_label:
+            return f"{cfg['title']} — {period_label}"
+        return cfg["title"]
+
+    def _sellers_export_title(self) -> str:
         title_parts = ["Top Sellers"]
         if self._dept:
             title_parts.append(display_dept(self._dept, self._nickname_map))
         title_parts.append(lookback_label(self._lookback_weeks))
-        period = self._period
-        if period.get("period_start") and period.get("period_end"):
-            title_parts.append(f"{period['period_start']} – {period['period_end']}")
-        stamp = datetime.now()
-        title_parts.append(stamp.strftime("%Y-%m-%d %H:%M"))
-        prompt_export_excel(
-            self,
-            " — ".join(title_parts),
-            headers,
-            rows,
-            f"top_sellers_{stamp.strftime('%Y-%m-%d_%H%M')}.xlsx",
-        )
-
-    def _export_table(self, table_key: str, fmt: str) -> None:
-        if table_key == "alerts":
-            cfg = _STOCK_ALERT_MODES[self._alert_type]
-            headers = cfg["headers"]
-            rows = self._alerts_display_rows
-        elif table_key == "sales":
-            cfg = _SALES_MODE
-            headers = cfg["headers"]
-            rows = self._sales_display_rows
-        elif table_key == "dead":
-            cfg = _DEAD_MODE
-            headers = cfg["headers"]
-            rows = self._dead_display_rows
-        else:
-            cfg = _SLOW_MODE
-            headers = cfg["headers"]
-            rows = self._slow_display_rows
-
-        period = self._period
-        period_label = ""
-        if period.get("period_start") and period.get("period_end"):
-            period_label = f"{period['period_start']} – {period['period_end']}"
-        title = f"{cfg['title']} — {period_label}"
-        if fmt == "excel":
-            prompt_export_excel(
-                self, title, headers, rows, f"{cfg['filename']}.xlsx"
-            )
-        else:
-            prompt_export_pdf(
-                self, title, headers, rows, f"{cfg['filename']}.pdf"
-            )
+        period_label = self._period_span_label()
+        if period_label:
+            title_parts.append(period_label)
+        title_parts.append(datetime.now().strftime("%Y-%m-%d %H:%M"))
+        return " — ".join(title_parts)
 
     def _load_period_data(self) -> None:
         self._sync_lookback_combos()
@@ -1192,6 +1259,7 @@ class HomePage(QWidget):
                 has_enrichment=enriched,
                 lookback_weeks=self._lookback_weeks,
             )
+            no_movement_rows = list_no_movement_items(session)
             self._nickname_map = load_nickname_map(session)
 
         self._period = period or {}
@@ -1203,6 +1271,7 @@ class HomePage(QWidget):
         show_sales = config.get("show_sales_tab", True)
         show_slow = config.get("show_slow_moving_tab", True)
         show_dead = config.get("show_dead_stock_tab", True)
+        show_no_movement = config.get("show_no_movement_tab", True)
         show_health = config.get("show_stock_health", True)
         self._show_overview_kpis = show_kpis
         self._show_overview_charts = show_charts
@@ -1217,6 +1286,7 @@ class HomePage(QWidget):
         self._tabs.setTabVisible(_SALES_TAB, show_sales)
         self._tabs.setTabVisible(_SLOW_TAB, show_slow)
         self._tabs.setTabVisible(_DEAD_TAB, show_dead)
+        self._tabs.setTabVisible(_NO_MOVEMENT_TAB, show_no_movement)
         overview_visible = show_kpis or show_charts
         self._tabs.setTabVisible(_OVERVIEW_TAB, overview_visible)
         self._tabs.setTabVisible(_IMPORT_TAB, True)
@@ -1231,6 +1301,7 @@ class HomePage(QWidget):
             self._markup_rows = period.get("markup_alerts", [])
             self._slow_rows = period.get("slow_moving_items", [])
             self._dead_rows = period.get("dead_stock_items", [])
+            self._no_movement_rows = no_movement_rows
             self._sales_rows = period.get("sales_items", [])
 
             if period.get("period_start") and period.get("period_end"):
@@ -1260,6 +1331,7 @@ class HomePage(QWidget):
             self._markup_rows = []
             self._slow_rows = []
             self._dead_rows = []
+            self._no_movement_rows = []
             self._sales_rows = []
             self._populate_dept_combo([])
             self._populate_sellers_table([])
@@ -1310,6 +1382,7 @@ class HomePage(QWidget):
             self._tabs.setTabVisible(_SALES_TAB, False)
             self._tabs.setTabVisible(_SLOW_TAB, False)
             self._tabs.setTabVisible(_DEAD_TAB, False)
+            self._tabs.setTabVisible(_NO_MOVEMENT_TAB, False)
             self._dashboard_header.set_subtitle("Awaiting enrichment (Step 2)")
 
         self._stock_take.refresh()
@@ -1362,6 +1435,8 @@ class HomePage(QWidget):
             self._apply_slow_filter()
         elif state.tab == _DEAD_TAB:
             self._apply_dead_filter()
+        elif state.tab == _NO_MOVEMENT_TAB:
+            self._apply_no_movement_filter()
 
         self._tabs.setCurrentIndex(state.tab)
         self._on_home_tab_changed(state.tab)

@@ -160,6 +160,7 @@ class SettingsPage(QWidget):
         self._show_sales_tab = QCheckBox("Show sales tab")
         self._show_slow_moving_tab = QCheckBox("Show slow moving tab")
         self._show_dead_stock_tab = QCheckBox("Show dead stock tab")
+        self._show_no_movement_tab = QCheckBox("Show no movement tab")
         self._show_stock_health = QCheckBox("Show stock health chart")
         dashboard_layout.addWidget(self._show_kpis)
         dashboard_layout.addWidget(self._show_charts)
@@ -167,6 +168,7 @@ class SettingsPage(QWidget):
         dashboard_layout.addWidget(self._show_sales_tab)
         dashboard_layout.addWidget(self._show_slow_moving_tab)
         dashboard_layout.addWidget(self._show_dead_stock_tab)
+        dashboard_layout.addWidget(self._show_no_movement_tab)
         dashboard_layout.addWidget(self._show_stock_health)
         save_dashboard = QPushButton("Save Dashboard Layout")
         save_dashboard.clicked.connect(self._save_dashboard)
@@ -285,6 +287,7 @@ class SettingsPage(QWidget):
                     "show_sales_tab": self._show_sales_tab.isChecked(),
                     "show_slow_moving_tab": self._show_slow_moving_tab.isChecked(),
                     "show_dead_stock_tab": self._show_dead_stock_tab.isChecked(),
+                    "show_no_movement_tab": self._show_no_movement_tab.isChecked(),
                     "show_stock_health": self._show_stock_health.isChecked(),
                 },
             )
@@ -357,6 +360,7 @@ class SettingsPage(QWidget):
         self._show_sales_tab.setChecked(config.get("show_sales_tab", True))
         self._show_slow_moving_tab.setChecked(config.get("show_slow_moving_tab", True))
         self._show_dead_stock_tab.setChecked(config.get("show_dead_stock_tab", True))
+        self._show_no_movement_tab.setChecked(config.get("show_no_movement_tab", True))
         self._show_stock_health.setChecked(config.get("show_stock_health", True))
         self._restore_db_btn.setEnabled(previous_database_exists())
 
